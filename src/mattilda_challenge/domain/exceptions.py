@@ -7,7 +7,6 @@ Exceptions are organized by category: validation, entity-specific, and business 
 
 from __future__ import annotations
 
-
 # =============================================================================
 # Base Exception
 # =============================================================================
