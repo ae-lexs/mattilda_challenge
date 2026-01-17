@@ -13,7 +13,9 @@ This document provides detailed coding standards, style guidelines, and contribu
 - [Development Setup](#development-setup)
 - [Code Style Standards](#code-style-standards)
 - [Domain Invariants (Must Not Be Violated)](#domain-invariants-must-not-be-violated)
+- [REST API Guidelines (Must Follow)](#rest-api-guidelines-must-follow)
 - [Documentation Guidelines](#documentation-guidelines)
+- [Unicode & Encoding](#unicode--encoding)
 - [Testing Guidelines](#testing-guidelines)
 - [Database Guidelines](#database-guidelines)
 - [Git Workflow](#git-workflow)
@@ -159,13 +161,256 @@ async def record_payment_broken(
 
 
 **Common mistakes to avoid**:
-- âŒ Calculating late fees in controllers or repositories
-- âŒ Updating invoice status in repositories (use cases do this)
-- âŒ Reading `datetime.now()` directly anywhere
-- âŒ Using floats for money "temporarily" (no temporary violations)
-- âŒ Storing calculated fields (overdue, balance_due)
+- ❌ Calculating late fees in controllers or repositories
+- ❌ Updating invoice status in repositories (use cases do this)
+- ❌ Reading `datetime.now()` directly anywhere
+- ❌ Using floats for money "temporarily" (no temporary violations)
+- ❌ Storing calculated fields (overdue, balance_due)
+
 
 ---
+
+## REST API Guidelines (Must Follow)
+
+The following REST layer patterns are **non-negotiable** for consistency and maintainability. Violations will be caught in code review.
+
+See [ADR-005: REST API Design](docs/adrs/ADR-005-rest-api-design.md) for complete rationale.
+
+### Controller Pattern: Parse → Map → Execute → Map → Return
+
+**Rule**: Controllers orchestrate only. No business logic, no inline conversions, no try/catch blocks.
+
+```python
+# ✅ CORRECT: Thin controller following pattern
+@router.post("/invoices")
+async def create_invoice(
+    request: InvoiceCreateRequestDTO,
+    session: AsyncSession = Depends(get_session),
+    time_provider: TimeProvider = Depends(get_time_provider),
+) -> InvoiceResponseDTO:
+    """Create invoice endpoint handler."""
+    async with UnitOfWork(session) as uow:
+        # 1. Parse (handled by FastAPI + Pydantic)
+        
+        # 2. Map DTO to domain request
+        domain_request = InvoiceMapper.to_create_request(
+            request,
+            time_provider.now()
+        )
+        
+        # 3. Execute use case
+        use_case = CreateInvoiceUseCase()
+        invoice = await use_case.execute(uow, domain_request)
+        
+        # 4. Map domain entity to response DTO
+        return InvoiceMapper.to_response(invoice, time_provider.now())
+
+
+# ❌ Wrong: Business logic in controller
+@router.post("/invoices")
+async def create_invoice(request: InvoiceCreateRequestDTO):
+    # Inline Decimal conversion
+    amount = Decimal(request.amount)  # ❌ Should be in mapper
+    
+    # Business logic
+    if amount <= 0:  # ❌ Should be in domain
+        raise HTTPException(status_code=400)
+    
+    # State calculations
+    status = InvoiceStatus.PENDING  # ❌ Should be in domain
+    
+    # Direct repository access
+    invoice = await invoice_repo.save(...)  # ❌ Should use UoW via use case
+    
+    return invoice  # ❌ Should map to DTO
+```
+
+### Error Handling: Global Handlers Only
+
+**Rule**: Routes do NOT catch domain exceptions. Let them propagate to global exception handlers.
+
+```python
+# ✅ Correct: Let exceptions propagate
+@router.post("/payments")
+async def record_payment(...):
+    """Record payment endpoint handler."""
+    async with UnitOfWork(session) as uow:
+        use_case = RecordPaymentUseCase()
+        payment = await use_case.execute(uow, request)
+        # If payment exceeds balance, PaymentExceedsBalanceError propagates
+        # Global handler catches and returns 400
+        return PaymentMapper.to_response(payment)
+
+
+# ❌ Wrong: Catching domain exceptions in route
+@router.post("/payments")
+async def record_payment(...):
+    try:
+        use_case = RecordPaymentUseCase()
+        payment = await use_case.execute(uow, request)
+    except PaymentExceedsBalanceError as e:  # ❌ Duplicates global handler
+        raise HTTPException(status_code=400, detail=str(e))
+    except InvalidPaymentAmountError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    # This logic should be in app.py global handlers!
+```
+
+**Global handlers are registered once in `app.py`:**
+
+```python
+@app.exception_handler(PaymentExceedsBalanceError)
+async def handle_business_rule_violation(request, exc):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+```
+
+### Monetary Values: String Boundary Enforcement
+
+**Rule**: All monetary values are strings in DTOs, Decimal in domain/application.
+
+```python
+# ✅ CORRECT: DTO with string amounts
+class InvoiceCreateRequestDTO(BaseModel):
+    amount: str = Field(
+        pattern=r"^\d+\.\d{2}$",  # Regex validates format
+        examples=["1500.00"]
+    )
+
+# ✅ CORRECT: Mapper converts at boundary
+class InvoiceMapper:
+    @staticmethod
+    def to_create_request(dto: InvoiceCreateRequestDTO, now: datetime):
+        return CreateInvoiceRequest(
+            amount=Decimal(dto.amount),  # ✅ str → Decimal
+            ...
+        )
+    
+    @staticmethod
+    def to_response(invoice: Invoice, now: datetime):
+        return InvoiceResponseDTO(
+            amount=str(invoice.amount),  # ✅ Decimal → str
+            ...
+        )
+
+
+# ❌ Wrong: Numeric type in DTO
+class InvoiceCreateRequestDTO(BaseModel):
+    amount: float  # ❌ Float will cause precision loss
+
+
+# ❌ Wrong: Inline conversion in controller
+@router.post("/invoices")
+async def create_invoice(request: InvoiceCreateRequestDTO):
+    amount = Decimal(request.amount)  # ❌ Should be in mapper
+    ...
+```
+
+### Mapper Purity: No Side Effects
+
+**Rule**: Mappers are pure, deterministic functions. They translate types only.
+
+```python
+# ✅ CORRECT: Pure mapper
+class InvoiceMapper:
+    @staticmethod
+    def to_create_request(dto: InvoiceCreateRequestDTO, now: datetime):
+        """Pure translation function."""
+        return CreateInvoiceRequest(
+            student_id=StudentId.from_string(dto.student_id),
+            amount=Decimal(dto.amount),
+            due_date=parse_iso8601_utc(dto.due_date),
+            now=now  # Only external dependency allowed
+        )
+
+
+# ❌ WRONG: Mapper with side effects
+class InvoiceMapper:
+    @staticmethod
+    async def to_create_request(dto: InvoiceCreateRequestDTO):
+        # Querying repository
+        student = await student_repo.get_by_id(dto.student_id)  # ❌ NO!
+        
+        # Accessing external service
+        validation_result = await external_api.validate(dto)  # ❌ NO!
+        
+        # Logging
+        logger.info("Creating invoice")  # ❌ NO!
+        
+        return CreateInvoiceRequest(...)
+```
+
+**Mappers must NOT:**
+- Access repositories or databases
+- Call external APIs
+- Perform I/O operations
+- Access mutable state beyond parameters
+- Log or emit events
+
+**Only external dependency allowed:** Injected `now` parameter for timestamp conversions.
+
+### HTTP Status Code Semantics
+
+**Rule**: Use status codes consistently based on error type.
+
+| Status | When to Use | Example |
+|--------|-------------|---------|
+| **422** | Malformed/invalid *input values* | Format error, type mismatch, negative amount, non-UTC timestamp |
+| **400** | Valid input that violates *business rules* | Invalid state transition, payment exceeds balance |
+| **404** | Resource does not exist | Invoice not found, student not found |
+| **500** | Unexpected error (bug) | Uncaught exception, infrastructure failure |
+
+```python
+# Domain exceptions map to HTTP status codes (in app.py):
+
+# 422 - Input validation errors
+@app.exception_handler(InvalidInvoiceAmountError)
+@app.exception_handler(InvalidTimestampError)
+async def handle_validation_error(request, exc):
+    return JSONResponse(status_code=422, content={"detail": str(exc)})
+
+# 400 - Business rule violations
+@app.exception_handler(PaymentExceedsBalanceError)
+@app.exception_handler(InvalidStateTransitionError)
+async def handle_business_rule_violation(request, exc):
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+```
+
+### URL Versioning
+
+**Rule**: All endpoints use `/api/v1` prefix.
+
+```python
+# ✅ CORRECT: Versioned URL
+router = APIRouter(prefix="/api/v1/invoices", tags=["Invoices"])
+
+
+# ❌ WRONG: No version prefix
+router = APIRouter(prefix="/invoices", tags=["Invoices"])
+```
+
+### ISO 8601 Timestamps with Z Suffix
+
+**Rule**: All timestamps in responses use ISO 8601 UTC format with explicit `Z` suffix.
+
+```python
+# ✅ CORRECT: Mapper produces ISO 8601 with Z
+class InvoiceMapper:
+    @staticmethod
+    def to_response(invoice: Invoice, now: datetime):
+        return InvoiceResponseDTO(
+            created_at=invoice.created_at.isoformat(),  # Produces "2024-01-15T10:30:00Z"
+            ...
+        )
+
+
+# ❌ WRONG: Missing Z or non-UTC
+# "2024-01-15T10:30:00" (no timezone indicator)
+# "2024-01-15T10:30:00-06:00" (offset notation)
+```
+
+**Enforcement:**
+- Domain ensures all datetimes are UTC via `validate_utc_timestamp()`
+- Mappers use `.isoformat()` on validated UTC datetimes
+- Result always includes `Z` suffix
 
 ## Code Style Standards
 
@@ -531,7 +776,7 @@ Use comments sparingly, preferring self-documenting code:
 # across multiple application instances
 now = self.time_provider.now()
 
-# âŒ Bad: Comment repeats code
+# ❌ Bad: Comment repeats code
 # Set status to paid
 invoice.status = InvoiceStatus.PAID
 
@@ -552,6 +797,27 @@ Use specific format for tracking:
 def incomplete_feature():
     raise NotImplementedError("Feature not yet implemented")
 ```
+
+---
+
+## Unicode & Encoding
+
+All documentation and source files must be saved as **UTF-8** encoding.
+
+### Emoji Markers
+
+This project uses emoji markers for clarity in documentation and code comments:
+
+| Emoji | Meaning | Usage |
+|-------|---------|-------|
+| ✅ | Correct | Mark correct examples, valid patterns |
+| ❌ | Wrong | Mark incorrect examples, anti-patterns |
+
+### Encoding Rules
+
+- **Do not** replace emojis with ASCII substitutes (e.g., `[x]` instead of ❌)
+- **Do not** save files as Latin-1, Windows-1252, or other legacy encodings
+- **Always** use UTF-8 encoding when creating or editing files
 
 ---
 
@@ -858,7 +1124,7 @@ def test_late_fee_rounds_half_up():
     # Engineered to produce 2.5 cents after calculation
     fee = policy.calculate_fee(...)
     
-    assert fee == Decimal("0.03")  # 2.5 → 3 (up)
+    assert fee == Decimal("0.03")  # 2.5 â†’ 3 (up)
 ```
 
 ### 4. No New Floats Crossing Boundaries
