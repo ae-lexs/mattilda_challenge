@@ -7,6 +7,7 @@ from mattilda_challenge.domain.value_objects.late_fee_policy import LateFeePolic
 from mattilda_challenge.domain.value_objects.payment_id import PaymentId
 from mattilda_challenge.domain.value_objects.school_id import SchoolId
 from mattilda_challenge.domain.value_objects.student_id import StudentId
+from mattilda_challenge.domain.value_objects.student_status import StudentStatus
 
 __all__ = [
     "EntityId",
@@ -16,4 +17,5 @@ __all__ = [
     "PaymentId",
     "SchoolId",
     "StudentId",
+    "StudentStatus",
 ]

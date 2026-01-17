@@ -2,26 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from enum import Enum
 
 from mattilda_challenge.domain.exceptions import InvalidStudentDataError
-from mattilda_challenge.domain.value_objects import SchoolId, StudentId
-
-
-class StudentStatus(str, Enum):
-    """
-    Student enrollment status.
-
-    Inherits from str for JSON serialization.
-    """
-
-    ACTIVE = "active"  # Currently enrolled and attending
-    INACTIVE = "inactive"  # Not currently attending (temporary)
-    GRADUATED = "graduated"  # Completed studies
-
-    def __str__(self) -> str:
-        """Return string value for display."""
-        return self.value
+from mattilda_challenge.domain.value_objects import SchoolId, StudentId, StudentStatus
 
 
 @dataclass(frozen=True, slots=True)
