@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum
 
 from mattilda_challenge.domain.exceptions import (
     InvalidInvoiceAmountError,
@@ -11,24 +10,12 @@ from mattilda_challenge.domain.exceptions import (
     InvalidStateTransitionError,
 )
 from mattilda_challenge.domain.validate_utc_timestamp import validate_utc_timestamp
-from mattilda_challenge.domain.value_objects import InvoiceId, LateFeePolicy, StudentId
-
-
-class InvoiceStatus(str, Enum):
-    """
-    Invoice payment status.
-
-    Inherits from str for JSON serialization.
-    """
-
-    PENDING = "pending"  # No payments received yet
-    PARTIALLY_PAID = "partially_paid"  # Some payments received, balance remaining
-    PAID = "paid"  # Fully paid (sum of payments = amount)
-    CANCELLED = "cancelled"  # Invoice cancelled (no payment expected)
-
-    def __str__(self) -> str:
-        """Return string value for display."""
-        return self.value
+from mattilda_challenge.domain.value_objects import (
+    InvoiceId,
+    InvoiceStatus,
+    LateFeePolicy,
+    StudentId,
+)
 
 
 @dataclass(frozen=True, slots=True)
