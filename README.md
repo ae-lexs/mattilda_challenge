@@ -52,7 +52,7 @@ This project follows strict architectural principles (see [ADR-001](docs/adrs/AD
 
 - **Domain is immutable**: All entities and value objects use `frozen=True` dataclasses with copy-on-write pattern
 - **Monetary values use Decimal**: NEVER float - all money uses Python's `Decimal` for exact arithmetic
-- **Time is injected**: Domain never accesses the clock; time is always injected as a parameter
+- **Time is injected**: Domain never accesses the clock; time is always injected as a parameter from `TimeProvider`
 - **All datetimes are UTC**: Validated at construction via `validate_utc_timestamp()` guard
 - **IDs are UUID value objects**: Type-safe identifiers (InvoiceId, StudentId, etc.) prevent ID confusion
 - **Infrastructure is replaceable**: Domain has zero dependencies on frameworks or databases
@@ -63,15 +63,30 @@ These invariants ensure correctness, testability, and maintainability. See [CONT
 
 ---
 
-## Non-Goals (for this challenge)
+## Scope Boundaries
 
-- Multi-currency support or FX handling
-- Complex payment plans or installment schedules
-- External payment gateway integrations
-- Student enrollment workflows
-- Grade/academic tracking
-- Over-engineering beyond stated scope
-- Premature optimization or speculative abstractions
+### In Scope (48-hour challenge)
+
+- ✅ Full CRUD for Schools, Students, Invoices, Payments
+- ✅ Account statements (student and school level)
+- ✅ Late fee calculation with configurable policies
+- ✅ Partial payment support
+- ✅ Redis caching for account statements
+- ✅ Offset-based pagination with filtering and sorting
+- ✅ Observability (structured logging, health checks, Prometheus metrics)
+- ✅ Complete test coverage (unit + integration)
+- ✅ Docker Compose local development
+
+### Out of Scope (intentionally deferred)
+
+- ❌ **Authentication/Authorization** — Adds significant complexity; deferred to keep focus on core billing logic
+- ❌ **Frontend** — Backend-only challenge; API is designed to support any frontend
+- ❌ Multi-currency support or FX handling
+- ❌ Complex payment plans or installment schedules
+- ❌ External payment gateway integrations
+- ❌ Student enrollment workflows
+- ❌ Grade/academic tracking
+- ❌ Distributed tracing (OpenTelemetry/Jaeger)
 
 ---
 
@@ -85,7 +100,7 @@ All monetary values use **Decimal arithmetic** to ensure exact calculations:
 - Payment amounts: `Decimal("500.00")`
 - Account balances: Calculated precisely, no floating-point drift
 
-See: **ADR-003: Monetary Values & Decimal Arithmetic**
+See: **[ADR-002: Monetary Values](docs/adrs/ADR-002-domain-model.md#1-monetary-values---decimal-arithmetic-system-wide)**
 
 ### Domain Model
 
@@ -95,19 +110,33 @@ See: **ADR-003: Monetary Values & Decimal Arithmetic**
 - Track aggregate billing across all students
 
 #### Students
-- Enrolled in exactly one school
+- Enrolled in exactly one school (immutable relationship)
 - Have billing accounts with invoices
 - Can have multiple outstanding invoices
 
 #### Invoices
 - Issued to students for amounts owed
-- Have states: `pending`, `partially_paid`, `paid`, `overdue`, `cancelled`
-- Track due dates and payment history
+- Have states: `pending`, `partially_paid`, `paid`, `cancelled`
+- Track due dates and late fee policies
+- **Overdue is calculated**, not stored (computed from `due_date` and current time)
 
 #### Payments
 - Record monetary transactions against invoices
 - Support partial payments (multiple payments per invoice)
-- Immutable once created (audit trail)
+- **Immutable once created** (append-only audit trail)
+
+### Late Fee Calculation
+
+Late fees are calculated using a **LateFeePolicy** value object that encapsulates the business rule: fees apply to the **original invoice amount**, not the remaining balance.
+
+```python
+# Late fee formula
+monthly_fee = original_amount × monthly_rate
+daily_fee = monthly_fee / 30
+total_fee = daily_fee × days_overdue
+```
+
+See: **[ADR-002: Late Fee Policy](docs/adrs/ADR-002-domain-model.md#6-late-fee-calculation)**
 
 ### State Management
 
@@ -118,20 +147,18 @@ stateDiagram-v2
     [*] --> pending
     pending --> partially_paid: record partial payment
     pending --> paid: record full payment
-    pending --> overdue: due date passed
     pending --> cancelled: cancel invoice
     
     partially_paid --> paid: complete payment
-    partially_paid --> overdue: due date passed
     partially_paid --> cancelled: cancel invoice
-    
-    overdue --> partially_paid: record partial payment
-    overdue --> paid: record full payment
-    overdue --> cancelled: cancel invoice
     
     paid --> [*]
     cancelled --> [*]
+    
+    note right of pending: Overdue is CALCULATED not a stored status
 ```
+
+**Note**: `overdue` is not a stored status—it's computed dynamically by comparing `due_date` with the current time. This ensures the system is always correct without background jobs.
 
 ### Account Statements
 
@@ -142,6 +169,7 @@ Account statements provide financial summaries:
 - Total paid amount
 - Total pending amount
 - Breakdown by invoice status
+- Total late fees (calculated for overdue invoices)
 
 **School Statement**:
 - Aggregate across all students
@@ -154,41 +182,72 @@ Account statements provide financial summaries:
 
 The project follows **Clean Architecture** principles:
 
-- **Domain**: entities, value objects, business rules, invariants
-- **Application**: use cases (e.g., `CreateInvoice`, `RecordPayment`), ports (abstract interfaces)
-- **Infrastructure**: database repositories, cache, external services
-- **Entrypoints**: HTTP API layer (FastAPI)
-
-Business rules do not depend on frameworks, databases, or delivery mechanisms.
-
 ```mermaid
 flowchart TD
-    Domain["Domain<br/>(Entities, Value Objects, Rules)"]
-    Application["Application<br/>(Use Cases, Ports)"]
-    Infrastructure["Infrastructure<br/>(Repositories, Cache, DB)"]
-    Entrypoints["Entrypoints<br/>(REST API)"]
-
+    subgraph Entrypoints["Entrypoints Layer"]
+        E1[FastAPI Routes]
+        E2[Request/Response DTOs]
+        E3[Mappers]
+    end
+    
+    subgraph Application["Application Layer"]
+        A1[Use Cases]
+        A2[Ports: TimeProvider, Cache]
+        A3[Application DTOs]
+    end
+    
+    subgraph Domain["Domain Layer"]
+        D1[Entities: Invoice, Student, School, Payment]
+        D2[Value Objects: InvoiceId, LateFeePolicy]
+        D3[Ports: Repository Interfaces]
+        D4[Domain Exceptions]
+    end
+    
+    subgraph Infrastructure["Infrastructure Layer"]
+        I1[PostgreSQL Repositories]
+        I2[Redis Cache Adapters]
+        I3[Time Provider Implementation]
+        I4[ORM Models & Mappers]
+    end
+    
     Entrypoints --> Application
     Infrastructure --> Application
     Application --> Domain
+    
+    style Domain fill:#90EE90
+    style Application fill:#87CEEB
+    style Infrastructure fill:#FFB6C1
+    style Entrypoints fill:#DDA0DD
 ```
 
 **Dependency Rule**: Dependencies point **inward only**. Domain has zero knowledge of outer layers.
+
+| Allowed | Forbidden |
+|---------|-----------|
+| Entrypoints → Application ✅ | Domain → Application ❌ |
+| Entrypoints → Domain ✅ | Domain → Infrastructure ❌ |
+| Infrastructure → Application ✅ | Application → Entrypoints ❌ |
+| Infrastructure → Domain ✅ | Application → Infrastructure ❌ |
+| Application → Domain ✅ | |
 
 ---
 
 ## Technology Stack
 
-- **Language**: Python 3.14
-- **Framework**: FastAPI
-- **Database**: PostgreSQL
-- **ORM & Migrations**: SQLAlchemy (async) + Alembic
-- **Cache**: Redis
-- **Containerization**: Docker + Docker Compose
-- **Testing**: pytest
-- **Linting**: ruff
-- **Type Checking**: mypy (strict mode)
-- **Dependency Management**: [uv](https://docs.astral.sh/uv/)
+| Component | Choice | Version |
+|-----------|--------|---------|
+| Language | Python | 3.14 |
+| Framework | FastAPI | Latest |
+| Database | PostgreSQL | 16+ |
+| ORM & Migrations | SQLAlchemy (async) + Alembic | 2.0+ |
+| Cache | Redis | 7+ |
+| Containerization | Docker + Docker Compose | Latest |
+| Testing | pytest | Latest |
+| Linting | ruff | Latest |
+| Type Checking | mypy (strict mode) | Latest |
+| Logging | structlog | 24.1+ |
+| Metrics | prometheus-fastapi-instrumentator | 7.0+ |
+| Dependency Management | [uv](https://docs.astral.sh/uv/) | Latest |
 
 All components are designed to run locally via Docker with zero host dependencies.
 
@@ -202,20 +261,21 @@ mattilda_challenge/
 │   └── mattilda_challenge/
 │       ├── domain/
 │       │   ├── entities/
-│       │   │   ├── school.py           # School entity
-│       │   │   ├── student.py          # Student entity with enrollment
-│       │   │   ├── invoice.py          # Invoice entity with state machine
-│       │   │   └── payment.py          # Payment entity (immutable)
+│       │   │   ├── school.py
+│       │   │   ├── student.py
+│       │   │   ├── invoice.py
+│       │   │   └── payment.py
 │       │   ├── value_objects/
-│       │   │   ├── money.py            # Money value object (Decimal)
-│       │   │   ├── invoice_status.py   # InvoiceStatus enum
-│       │   │   └── student_status.py   # StudentStatus enum
+│       │   │   ├── ids.py              # InvoiceId, StudentId, etc.
+│       │   │   ├── invoice_status.py
+│       │   │   ├── student_status.py
+│       │   │   └── late_fee_policy.py
 │       │   ├── ports/
 │       │   │   ├── school_repository.py
 │       │   │   ├── student_repository.py
 │       │   │   ├── invoice_repository.py
 │       │   │   └── payment_repository.py
-│       │   └── exceptions.py           # Domain exception hierarchy
+│       │   └── exceptions.py
 │       ├── application/
 │       │   ├── use_cases/
 │       │   │   ├── create_school.py
@@ -224,80 +284,46 @@ mattilda_challenge/
 │       │   │   ├── record_payment.py
 │       │   │   ├── get_student_account_statement.py
 │       │   │   └── get_school_account_statement.py
+│       │   ├── ports/
+│       │   │   ├── time_provider.py
+│       │   │   └── account_statement_cache.py
 │       │   └── dtos/
-│       │       ├── school_dto.py
-│       │       ├── student_dto.py
-│       │       ├── invoice_dto.py
-│       │       └── account_statement_dto.py
+│       │       └── account_statement.py
 │       ├── infrastructure/
-│       │   ├── postgres/               # PostgreSQL-specific concerns
+│       │   ├── postgres/
 │       │   │   ├── models/
-│       │   │   │   ├── school_model.py
-│       │   │   │   ├── student_model.py
-│       │   │   │   ├── invoice_model.py
-│       │   │   │   └── payment_model.py
-│       │   │   └── connection.py
-│       │   ├── redis/                  # Redis-specific concerns
+│       │   │   ├── mappers/
+│       │   │   ├── connection.py
+│       │   │   └── unit_of_work.py
+│       │   ├── redis/
 │       │   │   └── client.py
-│       │   └── adapters/               # Port implementations (tool-agnostic)
-│       │       ├── school_repository.py
-│       │       ├── student_repository.py
-│       │       ├── invoice_repository.py
-│       │       └── payment_repository.py
+│       │   ├── adapters/
+│       │   │   ├── school_repository.py
+│       │   │   ├── student_repository.py
+│       │   │   ├── invoice_repository.py
+│       │   │   ├── payment_repository.py
+│       │   │   └── account_statement_cache.py
+│       │   └── observability/
+│       │       ├── logging.py
+│       │       ├── request_id.py
+│       │       └── metrics.py
 │       └── entrypoints/
 │           └── http/
 │               ├── routes/
 │               │   ├── schools.py
 │               │   ├── students.py
 │               │   ├── invoices.py
-│               │   └── payments.py
+│               │   ├── payments.py
+│               │   └── health.py
 │               ├── dtos/
-│               │   ├── school_dtos.py
-│               │   ├── student_dtos.py
-│               │   ├── invoice_dtos.py
-│               │   └── payment_dtos.py
 │               ├── mappers/
-│               │   ├── school_mapper.py
-│               │   ├── student_mapper.py
-│               │   ├── invoice_mapper.py
-│               │   └── payment_mapper.py
 │               └── app.py
 ├── tests/
 │   ├── unit/
-│   │   ├── domain/
-│   │   │   ├── entities/
-│   │   │   │   ├── test_school.py
-│   │   │   │   ├── test_student.py
-│   │   │   │   ├── test_invoice.py
-│       │   │   └── test_payment.py
-│   │   │   └── value_objects/
-│   │   │       ├── test_money.py
-│   │   │       └── test_invoice_status.py
-│   │   ├── application/
-│   │   │   └── use_cases/
-│   │   │       ├── test_create_invoice.py
-│   │   │       ├── test_record_payment.py
-│   │   │       └── test_get_account_statement.py
-│   │   └── infrastructure/
-│   │       └── adapters/
-│   │           └── test_repositories.py
 │   └── integration/
-│       └── test_api_endpoints.py
 ├── docs/
-│   ├── adrs/
-│   │   ├── ADR-001-project-initialization.md
-│   │   ├── ADR-002-domain-model.md
-│   │   ├── ADR-003-monetary-values.md
-│   │   ├── ADR-004-repository-pattern.md
-│   │   ├── ADR-005-caching-strategy.md
-│   │   └── ADR-006-pagination.md
-│   └── api/
-│       └── openapi.json
+│   └── adrs/
 ├── alembic/
-│   ├── versions/
-│   └── env.py
-├── scripts/
-│   └── seed_data.py
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pyproject.toml
@@ -322,6 +348,9 @@ All operations run through Docker via `make` commands:
 # Start all services (database, redis, backend)
 make up
 
+# Run migrations
+make migrate
+
 # Access API documentation
 open http://localhost:8000/docs
 ```
@@ -334,7 +363,7 @@ All development tasks are executed through Docker containers using `make` comman
 
 | Command | Description |
 |---------|-------------|
-| **Development** |
+| **Development** | |
 | `make up` | Start all services (API, PostgreSQL, Redis) |
 | `make down` | Stop all services |
 | `make restart` | Restart all services |
@@ -342,45 +371,27 @@ All development tasks are executed through Docker containers using `make` comman
 | `make logs-api` | Tail logs from API only |
 | `make ps` | Show running containers |
 | `make shell` | Open shell inside API container |
-| **Dependencies** |
+| **Dependencies** | |
 | `make lock` | Generate/update uv.lock file |
 | `make sync` | Install dependencies from lockfile |
-| **Database** |
+| **Database** | |
 | `make migrate` | Run database migrations |
 | `make migrate-create NAME=...` | Create new migration |
 | `make migrate-rollback` | Rollback one migration step |
-| `make migrate-rollback-to REVISION=...` | Rollback to specific revision |
 | `make seed` | Load seed data into database |
 | `make db-shell` | Open PostgreSQL shell |
-| **Testing** |
+| **Testing** | |
 | `make test` | Run all tests |
 | `make test-unit` | Run unit tests only |
 | `make test-integration` | Run integration tests only |
 | `make test-file FILE=...` | Run specific test file |
 | `make test-coverage` | Run tests with coverage report |
-| **Code Quality** |
+| **Code Quality** | |
 | `make lint` | Run ruff check |
 | `make lint-fix` | Run ruff with auto-fix |
 | `make fmt` | Format code with ruff |
 | `make typecheck` | Run mypy strict type checking |
 | `make check` | Run lint + typecheck + test |
-
----
-
-## Dependency Management
-
-Dependencies are managed with **[uv](https://docs.astral.sh/uv/)** and fully locked.
-
-Workflow:
-
-```bash
-make lock
-make sync
-git add pyproject.toml uv.lock
-git commit -m "update dependencies"
-```
-
-All environments (local, CI, production) install dependencies strictly from the lockfile.
 
 ---
 
@@ -395,72 +406,128 @@ Interactive API documentation is automatically generated:
 ### Main Endpoints
 
 #### Schools
-- `GET /api/v1/schools` - List schools (paginated)
-- `POST /api/v1/schools` - Create school
-- `GET /api/v1/schools/{id}` - Get school details
-- `PUT /api/v1/schools/{id}` - Update school
-- `DELETE /api/v1/schools/{id}` - Delete school
-- `GET /api/v1/schools/{id}/account-statement` - School account statement (cached)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/schools` | List schools (paginated) |
+| POST | `/api/v1/schools` | Create school |
+| GET | `/api/v1/schools/{id}` | Get school details |
+| PUT | `/api/v1/schools/{id}` | Update school |
+| DELETE | `/api/v1/schools/{id}` | Delete school |
+| GET | `/api/v1/schools/{id}/account-statement` | School account statement (cached) |
 
 #### Students
-- `GET /api/v1/students` - List students (paginated)
-- `POST /api/v1/students` - Create student
-- `GET /api/v1/students/{id}` - Get student details
-- `PUT /api/v1/students/{id}` - Update student
-- `DELETE /api/v1/students/{id}` - Delete student
-- `GET /api/v1/students/{id}/account-statement` - Student account statement (cached)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/students` | List students (paginated) |
+| POST | `/api/v1/students` | Create student |
+| GET | `/api/v1/students/{id}` | Get student details |
+| PUT | `/api/v1/students/{id}` | Update student |
+| DELETE | `/api/v1/students/{id}` | Delete student |
+| GET | `/api/v1/students/{id}/account-statement` | Student account statement (cached) |
 
 #### Invoices
-- `GET /api/v1/invoices` - List invoices (paginated)
-- `POST /api/v1/invoices` - Create invoice
-- `GET /api/v1/invoices/{id}` - Get invoice details
-- `PUT /api/v1/invoices/{id}` - Update invoice
-- `DELETE /api/v1/invoices/{id}` - Delete invoice
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/invoices` | List invoices (paginated) |
+| POST | `/api/v1/invoices` | Create invoice |
+| GET | `/api/v1/invoices/{id}` | Get invoice details |
+| PUT | `/api/v1/invoices/{id}` | Update invoice |
+| DELETE | `/api/v1/invoices/{id}` | Delete invoice |
+| POST | `/api/v1/invoices/{id}/cancel` | Cancel invoice |
 
 #### Payments
-- `POST /api/v1/payments` - Record payment against invoice
-- `GET /api/v1/payments/{id}` - Get payment details
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/payments` | List payments (paginated) |
+| POST | `/api/v1/payments` | Record payment against invoice |
+| GET | `/api/v1/payments/{id}` | Get payment details |
 
 #### Health & Monitoring
-- `GET /health` - Health check endpoint
-- `GET /metrics` - Prometheus metrics (optional)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/health` | Full health check (DB + Redis) |
+| GET | `/health/live` | Liveness probe |
+| GET | `/health/ready` | Readiness probe |
+| GET | `/metrics` | Prometheus metrics |
 
 ---
 
-## Development Approach
+## Observability
 
-The project is developed **incrementally by stages**, each accompanied by an **Architecture Decision Record (ADR)**.
+The system implements production-ready observability following the "three pillars" approach:
 
-Each stage:
+### Structured Logging
 
-- Introduces **one core concept**
-- Is reviewed against **explicit invariants**
-- Preserves guarantees from previous stages
-- Avoids regressions by construction
+- **Development**: Colored console output for human readability
+- **Production**: JSON lines for log aggregation (stdout per 12-factor app)
+- **Request correlation**: All logs include `request_id` for tracing
 
-This ensures the system evolves correctly without breaking existing guarantees.
+```json
+{
+  "timestamp": "2024-01-20T15:00:00.000000Z",
+  "level": "info",
+  "message": "invoice_created",
+  "request_id": "abc-123-def",
+  "student_id": "550e8400-e29b-41d4-a716-446655440000",
+  "amount": "150.00"
+}
+```
+
+### Health Checks
+
+| Endpoint | Purpose | Checks |
+|----------|---------|--------|
+| `/health/live` | Liveness probe | Application responds |
+| `/health/ready` | Readiness probe | Can accept traffic |
+| `/health` | Full health | Database + Redis connectivity |
+
+### Prometheus Metrics
+
+Available at `/metrics`:
+- `http_request_duration_seconds` - Request latency histogram
+- `http_requests_total` - Request counter by method/path/status
+- Custom business metrics (optional)
+
+See: **[ADR-008: Observability Strategy](docs/adrs/ADR-008-observability.md)**
+
+---
+
+## Caching Strategy
+
+Account statements are cached in Redis with TTL-based invalidation:
+
+- **TTL**: 300 seconds (5 minutes)
+- **Pattern**: Cache-aside (check cache → compute if miss → cache result)
+- **Fail-open**: Cache failures don't break the application
+
+```
+Cache Key Format:
+mattilda:cache:v1:account_statement:student:{uuid}
+mattilda:cache:v1:account_statement:school:{uuid}
+```
+
+See: **[ADR-006: Redis Caching Strategy](docs/adrs/ADR-006-caching-strategy.md)**
 
 ---
 
 ## Architecture Decision Records
 
-All significant architectural decisions are documented in ADRs.
+All significant architectural decisions are documented in ADRs:
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-001](docs/adrs/ADR-001-project-initialization.md) | Project Initialization & Structure | Proposed |
-| [ADR-002](docs/adrs/ADR-002-domain-model.md) | Domain Model Design | Planned |
-| [ADR-003](docs/adrs/ADR-003-time-provider.md) | Time Provider Interface and Implementation | Planned |
-| [ADR-004](docs/adrs/ADR-004-postgresql-persistence.md) | PostgreSQL Persistence with SQLAlchemy and Alembic | Planned |
-| [ADR-005](docs/adrs/ADR-005-caching-strategy.md) | Redis Caching for Account Statements | Planned |
-| [ADR-006](docs/adrs/ADR-006-pagination.md) | Offset-Based Pagination | Planned |
-| [ADR-007](docs/adrs/ADR-007-authentication.md) | JWT Authentication (Optional) | Planned |
+| [ADR-001](docs/adrs/ADR-001-project-initialization.md) | Project Initialization & Structure | Accepted |
+| [ADR-002](docs/adrs/ADR-002-domain-model.md) | Domain Model Design | Accepted |
+| [ADR-003](docs/adrs/ADR-003-time-provider.md) | Time Provider Interface and Implementation | Accepted |
+| [ADR-004](docs/adrs/ADR-004-postgresql-persistence.md) | PostgreSQL Persistence with SQLAlchemy and Alembic | Accepted |
+| [ADR-005](docs/adrs/ADR-005-rest-api-design.md) | REST API Design | Accepted |
+| [ADR-006](docs/adrs/ADR-006-caching-strategy.md) | Redis Caching for Account Statements | Accepted |
+| [ADR-007](docs/adrs/ADR-007-pagination.md) | Offset-Based Pagination | Accepted |
+| [ADR-008](docs/adrs/ADR-008-observability.md) | Observability Strategy | Accepted |
 
 ---
 
 ## Key Design Principles
-
-The following design principles are enforced throughout the codebase (see [Core Invariants](#core-invariants) and [ADR-001](docs/adrs/ADR-001-project-initialization.md) for details):
 
 ### 1. Monetary Values (CRITICAL INVARIANT)
 
@@ -485,42 +552,23 @@ balance = 1500.00 - 500.00  # May be 999.9999999999...
 assert balance == pytest.approx(1000.00)
 ```
 
-**Why**: Financial correctness requires exact decimal arithmetic. Binary floating-point causes precision loss (e.g., `0.1 + 0.2 != 0.3`).
+### 2. Time Injection
 
-**Enforcement**:
-- Domain entities use `Decimal` for all amounts, validated in `__post_init__`
-- Database uses `NUMERIC(12, 2)` for all monetary columns
-- API accepts strings, converts to `Decimal` at boundary
-- Tests verify exact equality (`==`), never approximate (`approx`)
-- Code review blocks floats in domain/application layers
-
-See: **[ADR-002: Monetary Values](docs/adrs/ADR-002-domain-model.md#1-monetary-values---decimal-arithmetic-system-wide)**
-
-### 2. Repository Pattern with ABC
-
-All repositories defined as Abstract Base Classes with UUID-based identifiers:
+Domain never accesses the clock directly. Time is always injected from `TimeProvider`:
 
 ```python
-from abc import ABC, abstractmethod
+# ✅ Correct: Time as parameter
+def calculate_late_fee(self, now: datetime) -> Decimal:
+    if not self.is_overdue(now):
+        return Decimal("0.00")
+    return self.late_fee_policy.calculate_fee(self.amount, self.due_date, now)
 
-class InvoiceRepository(ABC):
-    @abstractmethod
-    async def get_by_id(self, invoice_id: InvoiceId) -> Invoice | None:
-        ...
-
-    @abstractmethod
-    async def save(self, invoice: Invoice) -> Invoice:
-        ...
+# ❌ Wrong: Domain accessing clock
+def calculate_late_fee(self) -> Decimal:
+    now = datetime.now(UTC)  # Domain should NOT access clock directly!
 ```
 
-**Benefits**:
-- Runtime enforcement of interface contracts
-- Type-safe identifiers (InvoiceId, not raw UUID or int)
-- Explicit architectural relationships
-- Fail-fast on incomplete implementations
-- Better IDE support and documentation
-
-See: **[ADR-001: ABC Ports](docs/adrs/ADR-001-project-initialization.md)** and **[ADR-002: UUID Identifiers](docs/adrs/ADR-002-domain-model.md#2-entity-identifiers-uuid-value-objects)**
+See: **[ADR-003: Time Provider](docs/adrs/ADR-003-time-provider.md)**
 
 ### 3. Immutability and Copy-on-Write
 
@@ -539,59 +587,28 @@ class Invoice:
         return replace(self, status=InvoiceStatus.PAID, updated_at=now)
 
 # Usage
-invoice = Invoice(status=InvoiceStatus.PENDING, ...)
 paid_invoice = invoice.mark_as_paid(now)
-
 assert invoice.status == InvoiceStatus.PENDING      # ✅ Original unchanged
 assert paid_invoice.status == InvoiceStatus.PAID    # ✅ New instance
-assert invoice is not paid_invoice                   # ✅ Different objects
 ```
 
-**Benefits**:
-- Thread-safe by design
-- Easy to test (verify before/after state)
-- Transaction-safe (failures don't corrupt state)
+### 4. Unit of Work Pattern
 
-See: **ADR-001: Project Initialization & Structure**
-
-### 4. Clean Architecture Boundaries
-
-**Dependency Rule**: Source code dependencies point **inward only**.
-
-```
-Allowed:
-  Entrypoints → Application → Domain ✅
-  Infrastructure → Application ✅
-  Infrastructure → Domain ✅
-
-Forbidden:
-  Domain → Application ❌
-  Domain → Infrastructure ❌
-  Application → Entrypoints ❌
-```
-
-**Enforcement**:
-- Import checks in tests
-- Code review
-- Mypy strict mode
-
-See: **ADR-001: Project Initialization & Structure**
-
-### 5. Explicit State Machines
-
-Domain entities with states use explicit transition rules:
+Financial operations that span multiple repositories use Unit of Work for atomicity:
 
 ```python
-class Invoice:
-    def mark_as_paid(self) -> None:
-        if self.status not in [InvoiceStatus.PENDING, InvoiceStatus.PARTIALLY_PAID]:
-            raise InvalidStateTransition(
-                f"Cannot mark as paid from status: {self.status}"
-            )
-        self.status = InvoiceStatus.PAID
+async with uow:
+    payment = Payment.create(...)
+    await uow.payments.save(payment)
+    
+    invoice = await uow.invoices.get_by_id(invoice_id, for_update=True)
+    updated_invoice = invoice.update_status(new_status, now)
+    await uow.invoices.save(updated_invoice)
+    
+    await uow.commit()  # All or nothing
 ```
 
-Illegal transitions are rejected by design.
+See: **[ADR-004: PostgreSQL Persistence](docs/adrs/ADR-004-postgresql-persistence.md)**
 
 ---
 
@@ -600,10 +617,30 @@ Illegal transitions are rejected by design.
 ### Testing Philosophy
 
 - **Unit tests** for business logic (domain, use cases)
-- **Integration tests** minimal but critical (DB, API)
+- **Integration tests** for infrastructure (DB, API)
 - **No mocks for domain** - use real objects
 - **Test doubles for infrastructure** - in-memory repositories for unit tests
 - **Deterministic tests** - no random data in assertions
+
+### Test Data
+
+Always use explicit values, never randomization:
+
+```python
+# ✅ Correct: Explicit, reproducible
+invoice = Invoice.create(
+    student_id=StudentId.from_string("550e8400-e29b-41d4-a716-446655440000"),
+    amount=Decimal("1500.00"),
+    due_date=datetime(2024, 2, 1, tzinfo=UTC),
+    ...
+)
+
+# ❌ Wrong: Random data (non-deterministic)
+invoice = Invoice.create(
+    amount=Decimal(str(random.uniform(100, 10000))),
+    ...
+)
+```
 
 For detailed testing guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md#testing-guidelines).
 
@@ -611,36 +648,25 @@ For detailed testing guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md#testing-g
 
 ## Status
 
-🚧 **Work in progress** — project is intentionally built step by step.
+🚧 **Work in progress** — project is built incrementally by stages.
 
 ### Current Stage
 
-**Stage 0: Planning & Documentation**
+All ADRs have been written and accepted. Implementation is in progress.
 
-Completed:
-- ✅ [ADR-001: Project Initialization & Structure](docs/adrs/ADR-001-project-initialization.md)
-- ✅ [CONTRIBUTING.md](CONTRIBUTING.md) - Coding standards and guidelines
+**Completed**:
+- ✅ All 8 ADRs written and accepted
 - ✅ Project structure and core invariants defined
+- ✅ CONTRIBUTING.md with coding standards
 
-Next steps:
-1. Write ADR-002: Domain Model Design
-2. Write ADR-003: Time Provider Interface and Implementation  
-3. Write ADR-004: PostgreSQL Persistence with SQLAlchemy and Alembic
-4. Implement domain layer (entities, value objects)
-5. Implement application layer (use cases, ports)
-6. Implement infrastructure layer (repositories, cache)
-7. Implement entrypoints (FastAPI routes)
-8. Add observability (logging, health checks)
-
-### Roadmap
-
+**Implementation Roadmap**:
 - [ ] **Stage 1**: Domain model with entities and value objects
 - [ ] **Stage 2**: Repository pattern and database persistence
 - [ ] **Stage 3**: Use cases and application logic
 - [ ] **Stage 4**: REST API endpoints with OpenAPI docs
 - [ ] **Stage 5**: Caching and pagination
-- [ ] **Stage 6**: Authentication and logging
-- [ ] **Stage 7**: Frontend (separate repository)
+- [ ] **Stage 6**: Observability (logging, health checks, metrics)
+- [ ] **Stage 7**: Integration testing and documentation
 
 ---
 

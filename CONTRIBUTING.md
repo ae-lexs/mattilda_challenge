@@ -18,6 +18,7 @@ This document provides detailed coding standards, style guidelines, and contribu
 - [Unicode & Encoding](#unicode--encoding)
 - [Testing Guidelines](#testing-guidelines)
 - [Database Guidelines](#database-guidelines)
+- [Observability Guidelines](#observability-guidelines)
 - [Git Workflow](#git-workflow)
 - [Pull Request Process](#pull-request-process)
 
@@ -70,6 +71,9 @@ make typecheck
 
 # Format code
 make fmt
+
+# Run all checks (lint + typecheck + test)
+make check
 ```
 
 ---
@@ -82,13 +86,15 @@ See [ADR-002: Domain Model Design](docs/adrs/ADR-002-domain-model.md) for comple
 
 ### Hard Invariants
 
-- ✅ **Monetary values must be `Decimal`** - No floats, no exceptions, anywhere in domain/application
-- ✅ **All domain datetimes must be UTC** - Validated via `validate_utc_timestamp()` guard
-- ✅ **Entities are immutable** - `@dataclass(frozen=True, slots=True)` with copy-on-write pattern
-- ✅ **IDs are UUID value objects** - Never raw `UUID` in domain APIs (use `InvoiceId`, `StudentId`, etc.)
-- ✅ **Payments are append-only** - No updates or deletes after creation
-- ✅ **Overdue is calculated** - Never stored as status, always computed from `due_date` and `now`
-- ✅ **Time is injected** - Domain never calls `datetime.now()`, always parameter from `TimeProvider`
+| Invariant | Description | Reference |
+|-----------|-------------|-----------|
+| ✅ **Monetary values must be `Decimal`** | No floats, no exceptions, anywhere in domain/application | [ADR-002](docs/adrs/ADR-002-domain-model.md#1-monetary-values---decimal-arithmetic-system-wide) |
+| ✅ **All domain datetimes must be UTC** | Validated via `validate_utc_timestamp()` guard | [ADR-003](docs/adrs/ADR-003-time-provider.md) |
+| ✅ **Entities are immutable** | `@dataclass(frozen=True, slots=True)` with copy-on-write pattern | [ADR-001](docs/adrs/ADR-001-project-initialization.md) |
+| ✅ **IDs are UUID value objects** | Never raw `UUID` in domain APIs (use `InvoiceId`, `StudentId`, etc.) | [ADR-002](docs/adrs/ADR-002-domain-model.md#2-entity-identifiers-uuid-value-objects) |
+| ✅ **Payments are append-only** | No updates or deletes after creation | [ADR-002](docs/adrs/ADR-002-domain-model.md#5-payment-entity) |
+| ✅ **Overdue is calculated** | Never stored as status, always computed from `due_date` and `now` | [ADR-002](docs/adrs/ADR-002-domain-model.md#4-invoice-entity) |
+| ✅ **Time is injected** | Domain never calls `datetime.now()`, always parameter from `TimeProvider` | [ADR-003](docs/adrs/ADR-003-time-provider.md) |
 
 ### Responsibility Boundaries
 
@@ -98,11 +104,10 @@ Know where logic lives to avoid architectural violations:
 |-----------|----------|---------|
 | Business rules | Domain entities / value objects | `Invoice.is_overdue()`, `LateFeePolicy.calculate_fee()` |
 | Aggregations | Repository (database) | `balance_due`, account statement totals |
-| Time access | `TimeProvider` only (ADR-003) | `time_provider.now()` in use cases |
+| Time access | `TimeProvider` only | `time_provider.now()` in use cases |
 | Validation | `__post_init__` + guard functions | `validate_utc_timestamp()`, Decimal type checks |
 | State transitions | Use cases orchestrate, entities validate | Use case updates status, entity validates transition |
 | Late fees | `LateFeePolicy` value object | Formula, rounding, "original amount" rule |
-
 
 ### Transaction Boundaries (Critical)
 
@@ -159,14 +164,13 @@ async def record_payment_broken(
 - Integration tests must verify rollback on exceptions
 - See [ADR-004: PostgreSQL Persistence](docs/adrs/ADR-004-postgresql-persistence.md) for complete rationale
 
+### Common Mistakes to Avoid
 
-**Common mistakes to avoid**:
 - ❌ Calculating late fees in controllers or repositories
 - ❌ Updating invoice status in repositories (use cases do this)
 - ❌ Reading `datetime.now()` directly anywhere
 - ❌ Using floats for money "temporarily" (no temporary violations)
 - ❌ Storing calculated fields (overdue, balance_due)
-
 
 ---
 
@@ -397,7 +401,7 @@ class InvoiceMapper:
     @staticmethod
     def to_response(invoice: Invoice, now: datetime):
         return InvoiceResponseDTO(
-            created_at=invoice.created_at.isoformat(),  # Produces "2024-01-15T10:30:00Z"
+            created_at=invoice.created_at.isoformat(),  # Produces "2024-01-15T10:30:00+00:00"
             ...
         )
 
@@ -410,7 +414,9 @@ class InvoiceMapper:
 **Enforcement:**
 - Domain ensures all datetimes are UTC via `validate_utc_timestamp()`
 - Mappers use `.isoformat()` on validated UTC datetimes
-- Result always includes `Z` suffix
+- Result always includes UTC indicator
+
+---
 
 ## Code Style Standards
 
@@ -436,7 +442,7 @@ Follow this order (enforced by `ruff`):
 from __future__ import annotations
 
 # 1. Standard library
-from datetime import datetime
+from datetime import datetime, UTC
 from decimal import Decimal
 from typing import Any
 
@@ -469,13 +475,13 @@ def calculate_balance(invoices, payments):
 
 ```python
 # ✅ Correct: Modern syntax
-def get_student(student_id: int) -> Student | None:
+def get_student(student_id: StudentId) -> Student | None:
     ...
 
 # ❌ Wrong: Legacy Optional
 from typing import Optional
 
-def get_student(student_id: int) -> Optional[Student]:
+def get_student(student_id: StudentId) -> Optional[Student]:
     ...
 ```
 
@@ -491,23 +497,21 @@ from decimal import Decimal
 
 # ✅ Correct: Immutable with slots
 @dataclass(frozen=True, slots=True)
-class Money:
-    """Immutable value object for monetary amounts."""
-    amount: Decimal
-    currency: str = "MXN"
+class LateFeePolicy:
+    """Immutable value object for late fee calculation."""
+    monthly_rate: Decimal
     
     def __post_init__(self) -> None:
         """Validate invariants at construction."""
-        if self.amount < 0:
-            raise ValueError("Amount cannot be negative")
-        if not self.currency:
-            raise ValueError("Currency cannot be empty")
+        if self.monthly_rate < 0:
+            raise ValueError("Rate cannot be negative")
+        if self.monthly_rate > Decimal("1.00"):
+            raise ValueError("Rate cannot exceed 100%")
 
 # ❌ Wrong: Mutable dataclass
 @dataclass
-class Money:
-    amount: Decimal
-    currency: str = "MXN"
+class LateFeePolicy:
+    monthly_rate: Decimal
 ```
 
 **Why `frozen=True`**:
@@ -583,86 +587,49 @@ Validate at construction, not later:
 ```python
 # ✅ Correct: Fail at construction
 @dataclass(frozen=True, slots=True)
-class Money:
-    amount: Decimal
+class LateFeePolicy:
+    monthly_rate: Decimal
     
     def __post_init__(self) -> None:
-        if self.amount < 0:
-            raise ValueError("Amount cannot be negative")
+        if self.monthly_rate < 0:
+            raise ValueError("Rate cannot be negative")
 
 # ❌ Wrong: Defensive validation later
 @dataclass(frozen=True, slots=True)
-class Money:
-    amount: Decimal
+class LateFeePolicy:
+    monthly_rate: Decimal
     
-    def add(self, other: Money) -> Money:
-        if self.amount < 0 or other.amount < 0:  # Too late!
-            raise ValueError("Negative amounts not allowed")
-        return Money(self.amount + other.amount)
+    def calculate_fee(self, amount: Decimal) -> Decimal:
+        if self.monthly_rate < 0:  # Too late!
+            raise ValueError("Rate cannot be negative")
+        return amount * self.monthly_rate
 ```
 
-### 9. No Magic
-
-Avoid hidden behavior:
-
-```python
-# ✅ Correct: Explicit factory method
-@classmethod
-def create(
-    cls,
-    student_id: int,
-    amount: Decimal,
-    due_date: datetime,
-    now: datetime,
-) -> Invoice:
-    """
-    Create new invoice with validation.
-    
-    Generates invoice number and sets initial status.
-    """
-    invoice_number = generate_invoice_number()
-    return cls(
-        id=0,  # Will be set by repository
-        student_id=student_id,
-        invoice_number=invoice_number,
-        amount=amount,
-        due_date=due_date,
-        status=InvoiceStatus.PENDING,
-        created_at=now,
-        updated_at=now,
-    )
-
-# ❌ Wrong: Magic __init__ with side effects
-def __init__(self, student_id: int, amount: Decimal, due_date: datetime):
-    self.invoice_number = generate_invoice_number()  # Hidden!
-    self.status = InvoiceStatus.PENDING  # Hidden!
-```
-
-### 10. Domain Purity
+### 9. Domain Purity
 
 **Critical Rule**: Domain entities never access external resources directly.
 
 ```python
 # ✅ Correct: Time injected as parameter
-def record_payment(self, amount: Decimal, now: datetime) -> Invoice:
+def calculate_late_fee(self, now: datetime) -> Decimal:
     """
-    Record payment and update status.
+    Calculate late fee using policy.
     
     Args:
-        amount: Payment amount
         now: Current timestamp (from TimeProvider)
     """
-    new_status = self._calculate_status(amount)
-    return replace(self, status=new_status, updated_at=now)
+    if not self.is_overdue(now):
+        return Decimal("0.00")
+    return self.late_fee_policy.calculate_fee(
+        original_amount=self.amount,
+        due_date=self.due_date,
+        now=now,
+    )
 
 # ❌ Wrong: Domain accessing clock
-def record_payment(self, amount: Decimal) -> Invoice:
-    new_status = self._calculate_status(amount)
-    return replace(
-        self,
-        status=new_status,
-        updated_at=datetime.now(UTC)  # Domain accessing external resource!
-    )
+def calculate_late_fee(self) -> Decimal:
+    now = datetime.now(UTC)  # Domain accessing external resource!
+    ...
 
 # ❌ Wrong: Domain accessing database
 def get_balance_due(self) -> Decimal:
@@ -749,19 +716,24 @@ class Invoice:
     - Invoice amount must be positive
     - Status transitions follow defined state machine
     - Timestamps must be timezone-aware UTC
+    - Overdue is calculated, not stored
     
     Attributes:
-        id: Unique invoice identifier
+        id: Unique invoice identifier (UUID value object)
         student_id: Student this invoice belongs to
-        amount: Invoice amount (always positive)
+        amount: Invoice amount (always positive Decimal)
         status: Current payment status
+        due_date: When payment is due (UTC)
+        late_fee_policy: Policy for calculating late fees
         created_at: UTC timestamp when invoice was created
         updated_at: UTC timestamp of last modification
     """
-    id: int
-    student_id: int
+    id: InvoiceId
+    student_id: StudentId
     amount: Decimal
     status: InvoiceStatus
+    due_date: datetime
+    late_fee_policy: LateFeePolicy
     created_at: datetime
     updated_at: datetime
 ```
@@ -772,18 +744,18 @@ Use comments sparingly, preferring self-documenting code:
 
 ```python
 # ✅ Good: Comment explains WHY, not WHAT
-# Use database transaction time (not system time) to avoid clock skew
-# across multiple application instances
-now = self.time_provider.now()
+# Late fees apply to ORIGINAL amount, not remaining balance,
+# per business rule from billing department
+monthly_fee = original_amount * self.monthly_rate
 
 # ❌ Bad: Comment repeats code
-# Set status to paid
-invoice.status = InvoiceStatus.PAID
+# Calculate the monthly fee
+monthly_fee = original_amount * self.monthly_rate
 
-# ✅ Good: Complex algorithm explained
-# Knuth-Morris-Pratt algorithm for O(n) string matching
-# See: https://en.wikipedia.org/wiki/Knuth%E2%80%93Morris%E2%80%93Pratt_algorithm
-pattern_index = self._kmp_search(text, pattern)
+# ✅ Good: Complex formula explained
+# Pro-rated daily fee: monthly_fee / 30 (always 30 days per billing spec)
+# See ADR-002 for rationale on 30-day month convention
+daily_fee = monthly_fee / Decimal("30")
 ```
 
 ### 5. TODO Comments
@@ -853,18 +825,18 @@ def test_invoice_record_payment_updates_status():
     """Test recording payment updates invoice status correctly."""
     # Arrange
     now = datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
-    invoice = Invoice(
-        id=1,
-        student_id=1,
+    invoice = Invoice.create(
+        student_id=StudentId.generate(),
         amount=Decimal("1000.00"),
-        status=InvoiceStatus.PENDING,
-        created_at=now,
-        updated_at=now,
+        due_date=datetime(2024, 2, 1, tzinfo=UTC),
+        late_fee_policy=LateFeePolicy.standard(),
+        now=now,
     )
     payment_amount = Decimal("500.00")
     
     # Act
-    updated_invoice = invoice.record_payment(payment_amount, now)
+    # (In real code, this would be in a use case)
+    updated_invoice = invoice.update_status(InvoiceStatus.PARTIALLY_PAID, now)
     
     # Assert
     assert updated_invoice.status == InvoiceStatus.PARTIALLY_PAID
@@ -878,18 +850,17 @@ def test_invoice_record_payment_updates_status():
 
 ```python
 # ✅ Correct: Explicit, reproducible
-invoice = Invoice(
-    id=1,
-    student_id=42,
+invoice = Invoice.create(
+    student_id=StudentId.from_string("550e8400-e29b-41d4-a716-446655440000"),
     amount=Decimal("1500.00"),
+    due_date=datetime(2024, 2, 1, tzinfo=UTC),
     ...
 )
 
 # ❌ Wrong: Random data (non-deterministic)
-invoice = Invoice(
-    id=random.randint(1, 1000),
-    student_id=random.randint(1, 100),
-    amount=Decimal(str(random.uniform(100, 10000))),
+invoice = Invoice.create(
+    student_id=StudentId.generate(),  # Random UUID each run
+    amount=Decimal(str(random.uniform(100, 10000))),  # Random amount
     ...
 )
 ```
@@ -903,23 +874,27 @@ import pytest
 from datetime import datetime, UTC
 
 @pytest.fixture
-def fixed_time():
+def fixed_time() -> datetime:
     """Provide fixed UTC timestamp for testing."""
     return datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 @pytest.fixture
-def sample_invoice(fixed_time):
+def time_provider(fixed_time: datetime) -> FixedTimeProvider:
+    """Provide fixed time provider for testing."""
+    return FixedTimeProvider(fixed_time)
+
+@pytest.fixture
+def sample_invoice(fixed_time: datetime) -> Invoice:
     """Provide sample invoice for testing."""
-    return Invoice(
-        id=1,
-        student_id=1,
+    return Invoice.create(
+        student_id=StudentId.from_string("550e8400-e29b-41d4-a716-446655440000"),
         amount=Decimal("1000.00"),
-        status=InvoiceStatus.PENDING,
-        created_at=fixed_time,
-        updated_at=fixed_time,
+        due_date=datetime(2024, 2, 1, tzinfo=UTC),
+        late_fee_policy=LateFeePolicy.standard(),
+        now=fixed_time,
     )
 
-def test_invoice_with_fixture(sample_invoice, fixed_time):
+def test_invoice_with_fixture(sample_invoice: Invoice, fixed_time: datetime):
     """Test using fixtures."""
     updated = sample_invoice.mark_as_paid(fixed_time)
     assert updated.status == InvoiceStatus.PAID
@@ -932,7 +907,13 @@ Always verify original is unchanged:
 ```python
 def test_invoice_immutability():
     """Test invoice copy-on-write preserves original."""
-    original = Invoice(...)
+    now = datetime(2024, 1, 1, tzinfo=UTC)
+    original = Invoice.create(
+        student_id=StudentId.generate(),
+        amount=Decimal("1000.00"),
+        ...
+        now=now,
+    )
     modified = original.mark_as_paid(now)
     
     # Verify original unchanged
@@ -945,15 +926,42 @@ def test_invoice_immutability():
     assert original is not modified
 ```
 
-### 7. Exception Testing
+### 7. Testing Time-Based Scenarios
+
+Use `FixedTimeProvider` with explicit `set_time()` calls:
+
+```python
+def test_late_fee_15_days_overdue(time_provider: FixedTimeProvider):
+    """Test late fee calculation 15 days after due date."""
+    invoice = Invoice.create(
+        amount=Decimal("1500.00"),
+        due_date=datetime(2024, 1, 1, tzinfo=UTC),
+        late_fee_policy=LateFeePolicy(monthly_rate=Decimal("0.05")),
+        now=datetime(2023, 12, 1, tzinfo=UTC),
+    )
+    
+    # Set time to 15 days after due date
+    time_provider.set_time(datetime(2024, 1, 16, tzinfo=UTC))
+    
+    fee = invoice.calculate_late_fee(time_provider.now())
+    
+    # Monthly fee: 1500 × 0.05 = 75.00
+    # Daily fee: 75.00 / 30 = 2.50
+    # 15 days × 2.50 = 37.50
+    assert fee == Decimal("37.50")  # Exact equality
+```
+
+### 8. Exception Testing
 
 ```python
 def test_invoice_mark_as_paid_from_paid_raises():
     """Test cannot mark paid invoice as paid again."""
-    invoice = Invoice(status=InvoiceStatus.PAID, ...)
+    now = datetime(2024, 1, 1, tzinfo=UTC)
+    invoice = Invoice.create(..., now=now)
+    paid_invoice = invoice.mark_as_paid(now)
     
     with pytest.raises(InvalidStateTransition) as exc_info:
-        invoice.mark_as_paid(now)
+        paid_invoice.mark_as_paid(now)
     
     assert "Cannot mark as paid from status: paid" in str(exc_info.value)
 ```
@@ -1015,6 +1023,87 @@ See [ADR-004: Database Index Strategy](docs/adrs/ADR-004-postgresql-persistence.
 
 ---
 
+## Observability Guidelines
+
+See [ADR-008: Observability Strategy](docs/adrs/ADR-008-observability.md) for complete implementation details.
+
+### Structured Logging
+
+**Rules for logging:**
+
+```python
+import structlog
+
+logger = structlog.get_logger()
+
+# ✅ Correct: Structured fields, no PII
+logger.info(
+    "invoice_created",
+    invoice_id=str(invoice.id),
+    student_id=str(invoice.student_id),
+    amount=str(invoice.amount),  # Decimal as string
+)
+
+# ❌ Wrong: Unstructured message
+logger.info(f"Created invoice {invoice.id} for student {invoice.student_id}")
+
+# ❌ Wrong: Logging PII
+logger.info("invoice_created", email=student.email, name=student.name)
+
+# ❌ Wrong: Logging request/response bodies
+logger.info("request_received", body=request.json())
+```
+
+**What to log:**
+
+| Event | Level | Fields |
+|-------|-------|--------|
+| Invoice created | INFO | `invoice_id`, `student_id`, `amount` |
+| Payment recorded | INFO | `payment_id`, `invoice_id`, `amount` |
+| State transition | INFO | `invoice_id`, `from_status`, `to_status` |
+| Cache hit | DEBUG | `key` |
+| Cache miss | DEBUG | `key` |
+| Validation error | WARNING | `field`, `error` |
+| Database error | ERROR | `operation`, `error` |
+
+**What NOT to log:**
+- Request/response bodies (size concerns, potential PII)
+- Personally Identifiable Information (emails, names, addresses)
+- Raw SQL queries with parameter values
+- Secrets, tokens, or credentials
+
+### Request ID Propagation
+
+All logs automatically include `request_id` via middleware:
+
+```python
+# Middleware sets request_id in contextvars
+# structlog processor adds it to every log entry
+
+{"timestamp": "...", "level": "info", "message": "invoice_created", 
+ "request_id": "abc-123-def", "invoice_id": "..."}
+```
+
+### Health Checks
+
+**Pattern for dependency checks:**
+
+```python
+async def check_database_health(session: AsyncSession) -> DependencyStatus:
+    """Check database connectivity."""
+    try:
+        await session.execute(text("SELECT 1"))
+        return DependencyStatus(name="database", status="healthy")
+    except Exception as e:
+        return DependencyStatus(
+            name="database", 
+            status="unhealthy", 
+            error=str(e)
+        )
+```
+
+---
+
 ## Git Workflow
 
 ### Branch Naming
@@ -1024,7 +1113,7 @@ See [ADR-004: Database Index Strategy](docs/adrs/ADR-004-postgresql-persistence.
 | Feature | `feature/{description}` | `feature/add-payment-entity` |
 | Bug fix | `fix/{description}` | `fix/invoice-calculation-error` |
 | ADR | `adr/{number}-{description}` | `adr/002-domain-model` |
-| Refactor | `refactor/{description}` | `refactor/extract-money-value-object` |
+| Refactor | `refactor/{description}` | `refactor/extract-late-fee-policy` |
 
 ### Commit Messages
 
@@ -1053,14 +1142,14 @@ Breaking changes start with BREAKING CHANGE:
 **Examples**:
 
 ```
-feat(domain): add Invoice entity with copy-on-write pattern
+feat(domain): add LateFeePolicy value object
 
-Implements immutable Invoice entity following ADR-001 standards.
-All state changes return new instances via dataclasses.replace().
+Implements immutable LateFeePolicy following ADR-002 standards.
+Encapsulates late fee calculation formula and business rules.
 
-- Add Invoice dataclass with frozen=True, slots=True
-- Implement mark_as_paid() and record_payment() methods
-- Add comprehensive unit tests
+- Add LateFeePolicy dataclass with frozen=True, slots=True
+- Implement calculate_fee() method with pro-rated daily fees
+- Add comprehensive unit tests for boundary conditions
 
 Fixes #45
 ```
@@ -1124,17 +1213,20 @@ def test_late_fee_rounds_half_up():
     # Engineered to produce 2.5 cents after calculation
     fee = policy.calculate_fee(...)
     
-    assert fee == Decimal("0.03")  # 2.5 â†’ 3 (up)
+    assert fee == Decimal("0.03")  # 2.5 → 3 (up)
 ```
 
 ### 4. No New Floats Crossing Boundaries
 
 ```python
 # ✅ Correct - convert at boundary
-@router.post("/invoices")
-async def create_invoice(request: CreateInvoiceRequest):
-    amount = Decimal(str(request.amount))  # Convert immediately
-    ...
+class InvoiceMapper:
+    @staticmethod
+    def to_create_request(dto: InvoiceCreateRequestDTO, now: datetime):
+        return CreateInvoiceRequest(
+            amount=Decimal(dto.amount),  # Convert immediately
+            ...
+        )
 
 # ❌ Wrong - float enters domain
 async def create_invoice(request: CreateInvoiceRequest):
@@ -1146,7 +1238,8 @@ async def create_invoice(request: CreateInvoiceRequest):
 ```python
 # ✅ Correct - verify copy-on-write preserves original
 def test_invoice_mark_as_paid_immutability():
-    original = Invoice.create(...)
+    now = datetime(2024, 1, 1, tzinfo=UTC)
+    original = Invoice.create(..., now=now)
     updated = original.update_status(InvoiceStatus.PAID, now)
     
     assert original.status == InvoiceStatus.PENDING  # Unchanged
@@ -1213,7 +1306,7 @@ Fixes #(issue number)
 Reviewers will check:
 
 1. **Correctness**: Does it solve the problem?
-2. **Architecture**: Follows Clean Architecture and ADR-001?
+2. **Architecture**: Follows Clean Architecture and ADRs?
 3. **Immutability**: Uses frozen dataclasses and copy-on-write?
 4. **Domain purity**: Domain doesn't access external resources?
 5. **Domain invariants**: No violations of hard invariants (see [Domain Invariants](#domain-invariants-must-not-be-violated))?
