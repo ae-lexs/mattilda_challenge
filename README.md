@@ -48,15 +48,18 @@ This project is also meant to serve as a **demonstration of production-ready pra
 
 ## Core Invariants
 
-This project follows strict architectural principles (see [ADR-001](docs/adrs/ADR-001-project-initialization.md)):
+This project follows strict architectural principles (see [ADR-001](docs/adrs/ADR-001-project-initialization.md) and [ADR-002](docs/adrs/ADR-002-domain-model.md)):
 
 - **Domain is immutable**: All entities and value objects use `frozen=True` dataclasses with copy-on-write pattern
+- **Monetary values use Decimal**: NEVER float - all money uses Python's `Decimal` for exact arithmetic
 - **Time is injected**: Domain never accesses the clock; time is always injected as a parameter
+- **All datetimes are UTC**: Validated at construction via `validate_utc_timestamp()` guard
+- **IDs are UUID value objects**: Type-safe identifiers (InvoiceId, StudentId, etc.) prevent ID confusion
 - **Infrastructure is replaceable**: Domain has zero dependencies on frameworks or databases
 - **Types are explicit**: All functions have complete type hints; mypy strict mode enforced
 - **Ports use ABC**: All repository interfaces enforce contracts at runtime via Abstract Base Classes
 
-These invariants ensure correctness, testability, and maintainability. See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed coding standards.
+These invariants ensure correctness, testability, and maintainability. See [CONTRIBUTING.md](CONTRIBUTING.md#domain-invariants-must-not-be-violated) for enforcement rules.
 
 ---
 
@@ -467,29 +470,40 @@ from decimal import Decimal
 # ✅ Correct
 invoice_amount = Decimal("1500.00")
 payment_amount = Decimal("500.00")
+balance = invoice_amount - payment_amount  # Exact: Decimal("1000.00")
 
-# ❌ Wrong - precision loss
-invoice_amount = 1500.00  # float causes rounding errors
+# ✅ Exact equality in tests
+assert balance == Decimal("1000.00")
+
+# ❌ Wrong - float precision loss
+invoice_amount = 1500.00  # Binary floating-point
+balance = 1500.00 - 500.00  # May be 999.9999999999...
+
+# ❌ Wrong - approximate equality (never for money)
+assert balance == pytest.approx(1000.00)
 ```
 
+**Why**: Financial correctness requires exact decimal arithmetic. Binary floating-point causes precision loss (e.g., `0.1 + 0.2 != 0.3`).
+
 **Enforcement**:
-- Domain entities use `Decimal` for all amounts
+- Domain entities use `Decimal` for all amounts, validated in `__post_init__`
 - Database uses `NUMERIC(12, 2)` for all monetary columns
 - API accepts strings, converts to `Decimal` at boundary
-- Tests verify exact equality (no `assertAlmostEqual`)
+- Tests verify exact equality (`==`), never approximate (`approx`)
+- Code review blocks floats in domain/application layers
 
-See: **ADR-003: Monetary Values & Decimal Arithmetic**
+See: **[ADR-002: Monetary Values](docs/adrs/ADR-002-domain-model.md#1-monetary-values---decimal-arithmetic-system-wide)**
 
 ### 2. Repository Pattern with ABC
 
-All repositories defined as Abstract Base Classes:
+All repositories defined as Abstract Base Classes with UUID-based identifiers:
 
 ```python
 from abc import ABC, abstractmethod
 
 class InvoiceRepository(ABC):
     @abstractmethod
-    async def get_by_id(self, invoice_id: int) -> Optional[Invoice]:
+    async def get_by_id(self, invoice_id: InvoiceId) -> Invoice | None:
         ...
 
     @abstractmethod
@@ -499,11 +513,12 @@ class InvoiceRepository(ABC):
 
 **Benefits**:
 - Runtime enforcement of interface contracts
+- Type-safe identifiers (InvoiceId, not raw UUID or int)
 - Explicit architectural relationships
 - Fail-fast on incomplete implementations
 - Better IDE support and documentation
 
-See: **ADR-004: Repository Pattern with ABC**
+See: **[ADR-001: ABC Ports](docs/adrs/ADR-001-project-initialization.md)** and **[ADR-002: UUID Identifiers](docs/adrs/ADR-002-domain-model.md#2-entity-identifiers-uuid-value-objects)**
 
 ### 3. Immutability and Copy-on-Write
 

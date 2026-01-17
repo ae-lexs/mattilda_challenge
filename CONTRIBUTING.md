@@ -70,6 +70,44 @@ make fmt
 
 ---
 
+## Domain Invariants (Must Not Be Violated)
+
+The following invariants are **non-negotiable** and enforced in code review. Violations will block PRs.
+
+See [ADR-002: Domain Model Design](docs/adrs/ADR-002-domain-model.md) for complete rationale and examples.
+
+### Hard Invariants
+
+- ✅ **Monetary values must be `Decimal`** - No floats, no exceptions, anywhere in domain/application
+- ✅ **All domain datetimes must be UTC** - Validated via `validate_utc_timestamp()` guard
+- ✅ **Entities are immutable** - `@dataclass(frozen=True, slots=True)` with copy-on-write pattern
+- ✅ **IDs are UUID value objects** - Never raw `UUID` in domain APIs (use `InvoiceId`, `StudentId`, etc.)
+- ✅ **Payments are append-only** - No updates or deletes after creation
+- ✅ **Overdue is calculated** - Never stored as status, always computed from `due_date` and `now`
+- ✅ **Time is injected** - Domain never calls `datetime.now()`, always parameter from `TimeProvider`
+
+### Responsibility Boundaries
+
+Know where logic lives to avoid architectural violations:
+
+| Rule Type | Lives In | Example |
+|-----------|----------|---------|
+| Business rules | Domain entities / value objects | `Invoice.is_overdue()`, `LateFeePolicy.calculate_fee()` |
+| Aggregations | Repository (database) | `balance_due`, account statement totals |
+| Time access | `TimeProvider` only (ADR-003) | `time_provider.now()` in use cases |
+| Validation | `__post_init__` + guard functions | `validate_utc_timestamp()`, Decimal type checks |
+| State transitions | Use cases orchestrate, entities validate | Use case updates status, entity validates transition |
+| Late fees | `LateFeePolicy` value object | Formula, rounding, "original amount" rule |
+
+**Common mistakes to avoid**:
+- ❌ Calculating late fees in controllers or repositories
+- ❌ Updating invoice status in repositories (use cases do this)
+- ❌ Reading `datetime.now()` directly anywhere
+- ❌ Using floats for money "temporarily" (no temporary violations)
+- ❌ Storing calculated fields (overdue, balance_due)
+
+---
+
 ## Code Style Standards
 
 ### 1. File Header
@@ -658,6 +696,93 @@ BREAKING CHANGE: InvoiceModel.amount now returns Decimal, not float
 
 ---
 
+## PR Requirements for Domain Changes
+
+If your PR touches any of the following, additional requirements apply:
+
+**Domain-critical code**:
+- `Invoice`, `Payment`, `Student`, `School` entities
+- `LateFeePolicy` or any value objects
+- Monetary calculations (anywhere)
+- Time logic or `TimeProvider`
+- Repository implementations
+
+**Required in PR**:
+
+### 1. Tests Must Assert Exact Equality
+
+```python
+# ✅ Correct - exact Decimal equality
+assert late_fee == Decimal("37.50")
+assert balance == Decimal("1500.00")
+
+# ❌ Wrong - approximate equality not allowed for money
+assert late_fee == pytest.approx(37.50)
+```
+
+### 2. Tests Must Cover UTC Rejection
+
+```python
+# ✅ Correct - test that naive/non-UTC datetimes are rejected
+def test_invoice_rejects_naive_datetime():
+    naive = datetime(2024, 1, 1, 12, 0, 0)  # No timezone
+    
+    with pytest.raises(InvalidInvoiceDataError) as exc:
+        Invoice.create(..., due_date=naive, now=datetime.now(UTC))
+    
+    assert "must have UTC timezone" in str(exc.value)
+```
+
+### 3. Explicit Rounding Assertions
+
+```python
+# ✅ Correct - document rounding behavior
+def test_late_fee_rounds_half_up():
+    """Test that 2.5 cents rounds up to 3 cents (ROUND_HALF_UP)."""
+    policy = LateFeePolicy(monthly_rate=Decimal("0.05"))
+    
+    # Engineered to produce 2.5 cents after calculation
+    fee = policy.calculate_fee(...)
+    
+    assert fee == Decimal("0.03")  # 2.5 → 3 (up)
+```
+
+### 4. No New Floats Crossing Boundaries
+
+```python
+# ✅ Correct - convert at boundary
+@router.post("/invoices")
+async def create_invoice(request: CreateInvoiceRequest):
+    amount = Decimal(str(request.amount))  # Convert immediately
+    ...
+
+# ❌ Wrong - float enters domain
+async def create_invoice(request: CreateInvoiceRequest):
+    invoice = Invoice.create(amount=request.amount)  # float!
+```
+
+### 5. Immutability Verification
+
+```python
+# ✅ Correct - verify copy-on-write preserves original
+def test_invoice_mark_as_paid_immutability():
+    original = Invoice.create(...)
+    updated = original.update_status(InvoiceStatus.PAID, now)
+    
+    assert original.status == InvoiceStatus.PENDING  # Unchanged
+    assert updated.status == InvoiceStatus.PAID
+    assert original is not updated  # Different objects
+```
+
+**Reviewers will check for**:
+- All monetary assertions use exact `Decimal` equality
+- UTC validation is tested (rejection of naive/non-UTC)
+- Rounding behavior is documented and tested
+- No floats in domain/application layers
+- Original entities unchanged after copy-on-write operations
+
+---
+
 ## Pull Request Process
 
 ### Before Creating PR
@@ -711,7 +836,10 @@ Reviewers will check:
 2. **Architecture**: Follows Clean Architecture and ADR-001?
 3. **Immutability**: Uses frozen dataclasses and copy-on-write?
 4. **Domain purity**: Domain doesn't access external resources?
-5. **Type safety**: Complete type hints, mypy passes?
-6. **Tests**: Adequate coverage, testing immutability?
-7. **Documentation**: Clear docstrings, ADR if needed?
-8. **Simplicity**: Is it as simple as possible?
+5. **Domain invariants**: No violations of hard invariants (see [Domain Invariants](#domain-invariants-must-not-be-violated))?
+6. **Type safety**: Complete type hints, mypy passes?
+7. **Tests**: Adequate coverage, testing immutability and invariants?
+8. **Documentation**: Clear docstrings, ADR if needed?
+9. **Simplicity**: Is it as simple as possible?
+
+**For domain changes**: See [PR Requirements for Domain Changes](#pr-requirements-for-domain-changes) for additional criteria.
