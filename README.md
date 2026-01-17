@@ -348,6 +348,8 @@ All development tasks are executed through Docker containers using `make` comman
 | **Database** |
 | `make migrate` | Run database migrations |
 | `make migrate-create NAME=...` | Create new migration |
+| `make migrate-rollback` | Rollback one migration step |
+| `make migrate-rollback-to REVISION=...` | Rollback to specific revision |
 | `make seed` | Load seed data into database |
 | `make db-shell` | Open PostgreSQL shell |
 | **Testing** |

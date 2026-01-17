@@ -12,8 +12,10 @@ This document provides detailed coding standards, style guidelines, and contribu
 
 - [Development Setup](#development-setup)
 - [Code Style Standards](#code-style-standards)
+- [Domain Invariants (Must Not Be Violated)](#domain-invariants-must-not-be-violated)
 - [Documentation Guidelines](#documentation-guidelines)
 - [Testing Guidelines](#testing-guidelines)
+- [Database Guidelines](#database-guidelines)
 - [Git Workflow](#git-workflow)
 - [Pull Request Process](#pull-request-process)
 
@@ -99,12 +101,69 @@ Know where logic lives to avoid architectural violations:
 | State transitions | Use cases orchestrate, entities validate | Use case updates status, entity validates transition |
 | Late fees | `LateFeePolicy` value object | Formula, rounding, "original amount" rule |
 
+
+### Transaction Boundaries (Critical)
+
+**Financial Use Case Transaction Rule**
+
+Any use case that:
+- Modifies financial state (invoices, payments, balances), OR
+- Spans multiple repository operations
+
+**MUST** execute inside a Unit of Work and must NOT commit outside it.
+
+```python
+# ✅ CORRECT: Use Unit of Work for multi-step financial operations
+async def record_payment_use_case(
+    uow: UnitOfWork,
+    invoice_id: InvoiceId,
+    amount: Decimal,
+):
+    """Record payment - requires atomic transaction."""
+    async with uow:
+        # Step 1: Create payment
+        payment = Payment.create(...)
+        await uow.payments.save(payment)
+        
+        # Step 2: Update invoice status
+        invoice = await uow.invoices.get_by_id(invoice_id, for_update=True)
+        updated_invoice = invoice.update_status(new_status, now)
+        await uow.invoices.save(updated_invoice)
+        
+        # Step 3: Atomic commit (all or nothing)
+        await uow.commit()
+
+# ❌ Wrong: Multiple independent operations (not atomic)
+async def record_payment_broken(
+    invoice_repo: InvoiceRepository,
+    payment_repo: PaymentRepository,
+):
+    payment = Payment.create(...)
+    await payment_repo.save(payment)  # Separate transaction
+    
+    invoice = await invoice_repo.get_by_id(invoice_id)
+    await invoice_repo.save(invoice)  # Separate transaction
+    
+    # If second save fails, payment exists but invoice unchanged!
+```
+
+**Repositories must never commit:**
+- Repositories only use `session.flush()` to write to DB
+- Only Unit of Work calls `session.commit()` or `session.rollback()`
+- This ensures atomicity across multi-repository operations
+
+**Enforcement:**
+- Code review must verify no `commit()` calls in repository code
+- Integration tests must verify rollback on exceptions
+- See [ADR-004: PostgreSQL Persistence](docs/adrs/ADR-004-postgresql-persistence.md) for complete rationale
+
+
 **Common mistakes to avoid**:
-- ❌ Calculating late fees in controllers or repositories
-- ❌ Updating invoice status in repositories (use cases do this)
-- ❌ Reading `datetime.now()` directly anywhere
-- ❌ Using floats for money "temporarily" (no temporary violations)
-- ❌ Storing calculated fields (overdue, balance_due)
+- âŒ Calculating late fees in controllers or repositories
+- âŒ Updating invoice status in repositories (use cases do this)
+- âŒ Reading `datetime.now()` directly anywhere
+- âŒ Using floats for money "temporarily" (no temporary violations)
+- âŒ Storing calculated fields (overdue, balance_due)
 
 ---
 
@@ -472,7 +531,7 @@ Use comments sparingly, preferring self-documenting code:
 # across multiple application instances
 now = self.time_provider.now()
 
-# ❌ Bad: Comment repeats code
+# âŒ Bad: Comment repeats code
 # Set status to paid
 invoice.status = InvoiceStatus.PAID
 
@@ -632,6 +691,61 @@ def test_invoice_mark_as_paid_from_paid_raises():
     
     assert "Cannot mark as paid from status: paid" in str(exc_info.value)
 ```
+
+---
+
+## Database Guidelines
+
+### Index Justification Requirement
+
+**Any new database index must be documented with:**
+
+1. **The query pattern it supports**
+   - Which API endpoint or use case requires it
+   - Example SQL query that benefits from the index
+
+2. **Why simpler alternatives are insufficient**
+   - For composite indexes: why single-column indexes don't work
+   - For single-column indexes: why no index causes problems
+
+3. **What other candidate indexes were considered and rejected**
+   - Explain trade-offs (e.g., write overhead vs read improvement)
+
+**Example (correct documentation):**
+
+```python
+# infrastructure/postgres/models/invoice_model.py
+
+__table_args__ = (
+    # Composite index: (student_id, status)
+    # Query: "Get pending invoices for student X" (account statement use case)
+    # Why: Single index on student_id requires filtering status in application (slower)
+    # Rejected: Index on status only (would scan all pending invoices, filter by student)
+    # Performance: 100x faster than single-column index for this query
+    Index("ix_invoices_student_status", "student_id", "status"),
+    
+    # Single index: status
+    # Query: "Get all pending invoices" (admin dashboard)
+    # Why: Composite (student_id, status) cannot be used for status-only queries
+    Index("ix_invoices_status", "status"),
+)
+```
+
+**Anti-pattern (insufficient documentation):**
+
+```python
+# ❌ Wrong: No justification
+Index("ix_invoices_amount", "amount"),  # Why? What query needs this?
+```
+
+**Prevention of index sprawl:**
+- Indexes add ~10-20% storage overhead per index
+- Indexes slow down INSERT/UPDATE operations
+- Unused indexes waste resources
+- Use `pg_stat_user_indexes` to monitor index usage
+- Remove indexes with `idx_scan = 0` after observation period
+
+See [ADR-004: Database Index Strategy](docs/adrs/ADR-004-postgresql-persistence.md#9-database-index-strategy) for detailed guidelines.
 
 ---
 
