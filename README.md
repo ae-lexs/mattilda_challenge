@@ -46,6 +46,20 @@ This project is also meant to serve as a **demonstration of production-ready pra
 
 ---
 
+## Core Invariants
+
+This project follows strict architectural principles (see [ADR-001](docs/adrs/ADR-001-project-initialization.md)):
+
+- **Domain is immutable**: All entities and value objects use `frozen=True` dataclasses with copy-on-write pattern
+- **Time is injected**: Domain never accesses the clock; time is always injected as a parameter
+- **Infrastructure is replaceable**: Domain has zero dependencies on frameworks or databases
+- **Types are explicit**: All functions have complete type hints; mypy strict mode enforced
+- **Ports use ABC**: All repository interfaces enforce contracts at runtime via Abstract Base Classes
+
+These invariants ensure correctness, testability, and maintainability. See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed coding standards.
+
+---
+
 ## Non-Goals (for this challenge)
 
 - Multi-currency support or FX handling
@@ -429,10 +443,10 @@ All significant architectural decisions are documented in ADRs.
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-001](docs/adrs/ADR-001-project-initialization.md) | Project Initialization & Structure | Planned |
+| [ADR-001](docs/adrs/ADR-001-project-initialization.md) | Project Initialization & Structure | Proposed |
 | [ADR-002](docs/adrs/ADR-002-domain-model.md) | Domain Model Design | Planned |
-| [ADR-003](docs/adrs/ADR-003-monetary-values.md) | Monetary Values & Decimal Arithmetic | Planned |
-| [ADR-004](docs/adrs/ADR-004-repository-pattern.md) | Repository Pattern with ABC | Planned |
+| [ADR-003](docs/adrs/ADR-003-time-provider.md) | Time Provider Interface and Implementation | Planned |
+| [ADR-004](docs/adrs/ADR-004-postgresql-persistence.md) | PostgreSQL Persistence with SQLAlchemy and Alembic | Planned |
 | [ADR-005](docs/adrs/ADR-005-caching-strategy.md) | Redis Caching for Account Statements | Planned |
 | [ADR-006](docs/adrs/ADR-006-pagination.md) | Offset-Based Pagination | Planned |
 | [ADR-007](docs/adrs/ADR-007-authentication.md) | JWT Authentication (Optional) | Planned |
@@ -440,6 +454,8 @@ All significant architectural decisions are documented in ADRs.
 ---
 
 ## Key Design Principles
+
+The following design principles are enforced throughout the codebase (see [Core Invariants](#core-invariants) and [ADR-001](docs/adrs/ADR-001-project-initialization.md) for details):
 
 ### 1. Monetary Values (CRITICAL INVARIANT)
 
@@ -489,7 +505,39 @@ class InvoiceRepository(ABC):
 
 See: **ADR-004: Repository Pattern with ABC**
 
-### 3. Clean Architecture Boundaries
+### 3. Immutability and Copy-on-Write
+
+All domain entities are immutable (`frozen=True` dataclasses). State changes return new instances:
+
+```python
+from dataclasses import replace
+
+# Domain entity (immutable)
+@dataclass(frozen=True, slots=True)
+class Invoice:
+    status: InvoiceStatus
+    
+    def mark_as_paid(self, now: datetime) -> Invoice:
+        """Return NEW invoice with status PAID (original unchanged)."""
+        return replace(self, status=InvoiceStatus.PAID, updated_at=now)
+
+# Usage
+invoice = Invoice(status=InvoiceStatus.PENDING, ...)
+paid_invoice = invoice.mark_as_paid(now)
+
+assert invoice.status == InvoiceStatus.PENDING      # ✅ Original unchanged
+assert paid_invoice.status == InvoiceStatus.PAID    # ✅ New instance
+assert invoice is not paid_invoice                   # ✅ Different objects
+```
+
+**Benefits**:
+- Thread-safe by design
+- Easy to test (verify before/after state)
+- Transaction-safe (failures don't corrupt state)
+
+See: **ADR-001: Project Initialization & Structure**
+
+### 4. Clean Architecture Boundaries
 
 **Dependency Rule**: Source code dependencies point **inward only**.
 
@@ -510,7 +558,9 @@ Forbidden:
 - Code review
 - Mypy strict mode
 
-### 4. Explicit State Machines
+See: **ADR-001: Project Initialization & Structure**
+
+### 5. Explicit State Machines
 
 Domain entities with states use explicit transition rules:
 
@@ -538,6 +588,8 @@ Illegal transitions are rejected by design.
 - **Test doubles for infrastructure** - in-memory repositories for unit tests
 - **Deterministic tests** - no random data in assertions
 
+For detailed testing guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md#testing-guidelines).
+
 ---
 
 ## Status
@@ -546,15 +598,22 @@ Illegal transitions are rejected by design.
 
 ### Current Stage
 
-**Stage 0: Planning & ADRs**
+**Stage 0: Planning & Documentation**
+
+Completed:
+- ✅ [ADR-001: Project Initialization & Structure](docs/adrs/ADR-001-project-initialization.md)
+- ✅ [CONTRIBUTING.md](CONTRIBUTING.md) - Coding standards and guidelines
+- ✅ Project structure and core invariants defined
 
 Next steps:
-1. Write ADR-001 through ADR-004
-2. Implement domain layer (entities, value objects)
-3. Implement application layer (use cases, ports)
-4. Implement infrastructure layer (repositories, cache)
-5. Implement entrypoints (FastAPI routes)
-6. Add observability (logging, health checks)
+1. Write ADR-002: Domain Model Design
+2. Write ADR-003: Time Provider Interface and Implementation  
+3. Write ADR-004: PostgreSQL Persistence with SQLAlchemy and Alembic
+4. Implement domain layer (entities, value objects)
+5. Implement application layer (use cases, ports)
+6. Implement infrastructure layer (repositories, cache)
+7. Implement entrypoints (FastAPI routes)
+8. Add observability (logging, health checks)
 
 ### Roadmap
 
