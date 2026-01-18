@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help up down logs ps sh lock sync test test-unit test-integration test-all test-file test-coverage lint lint-fix typecheck fmt check migrate migrate-new
+.PHONY: help up down logs ps sh lock sync test test-unit test-integration test-all test-file test-coverage lint lint-fix typecheck fmt check migrate migrate-new redis-cli redis-keys redis-get redis-ttl redis-clear
 
 help:
 	@echo "mattilda-challenge commands:"
@@ -34,6 +34,13 @@ help:
 	@echo "Database:"
 	@echo "  make migrate        Run pending migrations"
 	@echo "  make migrate-new MSG=desc  Create new migration"
+	@echo ""
+	@echo "Redis:"
+	@echo "  make redis-cli      Open Redis CLI shell"
+	@echo "  make redis-keys     List all cache keys"
+	@echo "  make redis-get KEY=...  Get cached value for key"
+	@echo "  make redis-ttl KEY=...  Check TTL for key"
+	@echo "  make redis-clear    Clear all cache keys"
 
 
 up:
@@ -101,3 +108,27 @@ migrate-new:
 		exit 1; \
 	fi
 	docker compose run --rm api uv run alembic revision --autogenerate -m "$(MSG)"
+
+redis-cli:
+	docker compose exec redis redis-cli
+
+redis-keys:
+	docker compose exec redis redis-cli KEYS "mattilda:cache:*"
+
+redis-get:
+	@if [ -z "$(KEY)" ]; then \
+		echo "Error: KEY parameter required. Usage: make redis-get KEY=\"mattilda:cache:v1:...\""; \
+		exit 1; \
+	fi
+	docker compose exec redis redis-cli GET "$(KEY)"
+
+redis-ttl:
+	@if [ -z "$(KEY)" ]; then \
+		echo "Error: KEY parameter required. Usage: make redis-ttl KEY=\"mattilda:cache:v1:...\""; \
+		exit 1; \
+	fi
+	docker compose exec redis redis-cli TTL "$(KEY)"
+
+redis-clear:
+	@echo "Clearing all mattilda cache keys..."
+	@docker compose exec redis redis-cli --scan --pattern "mattilda:cache:*" | xargs -r docker compose exec -T redis redis-cli DEL || echo "No keys to clear"
