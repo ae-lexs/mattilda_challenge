@@ -522,8 +522,9 @@ All significant architectural decisions are documented in ADRs:
 | [ADR-004](docs/adrs/ADR-004-postgresql-persistence.md) | PostgreSQL Persistence with SQLAlchemy and Alembic | Accepted |
 | [ADR-005](docs/adrs/ADR-005-rest-api-design.md) | REST API Design | Accepted |
 | [ADR-006](docs/adrs/ADR-006-caching-strategy.md) | Redis Caching for Account Statements | Accepted |
-| [ADR-007](docs/adrs/ADR-007-pagination.md) | Offset-Based Pagination | Accepted |
+| [ADR-007](docs/adrs/ADR-007-pagination.md) | Offset-Based Pagination | **Implemented** |
 | [ADR-008](docs/adrs/ADR-008-observability.md) | Observability Strategy | Accepted |
+| [ADR-009](docs/ADR-009.md) | Repository Port and Adapter Implementation | Accepted |
 
 ---
 
@@ -655,12 +656,14 @@ For detailed testing guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md#testing-g
 All ADRs have been written and accepted. Implementation is in progress.
 
 **Completed**:
-- ✅ All 8 ADRs written and accepted
+- ✅ All 9 ADRs written and accepted
 - ✅ Project structure and core invariants defined
 - ✅ CONTRIBUTING.md with coding standards
 - ✅ ADR-001: Project Initialization & Structure
 - ✅ ADR-002: Domain Model Design
 - ✅ ADR-003: Time Provider (port and adapters)
+- ✅ ADR-007: Pagination types (`PaginationParams`, `SortParams`, `Page[T]`, filter dataclasses)
+- ✅ ADR-009: Repository Port and Adapter Implementation (specification)
 
 **Implementation Roadmap**:
 - [x] **Stage 1**: Domain model with entities and value objects
