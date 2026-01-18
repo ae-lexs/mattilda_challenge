@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 
 from mattilda_challenge.application.ports import TimeProvider
-from mattilda_challenge.infrastructure.adapters.time_provider import (
+from mattilda_challenge.infrastructure.adapters import (
     FixedTimeProvider,
     SystemTimeProvider,
 )
