@@ -536,6 +536,7 @@ All significant architectural decisions are documented in ADRs:
 | [ADR-007](docs/adrs/ADR-007-pagination.md) | Offset-Based Pagination | Implemented |
 | [ADR-008](docs/adrs/ADR-008-observability.md) | Observability Strategy | Accepted |
 | [ADR-009](docs/ADR-009.md) | Repository Port and Adapter Implementation | Implemented |
+| [ADR-010](docs/ADR-010.md) | UseCase Pattern and Error Handling Strategy | Accepted |
 
 ---
 
