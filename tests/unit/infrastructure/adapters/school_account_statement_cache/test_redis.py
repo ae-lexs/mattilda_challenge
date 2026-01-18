@@ -72,9 +72,9 @@ def sample_statement(
 def cache(mock_redis: AsyncMock) -> RedisSchoolAccountStatementCache:
     """Provide RedisSchoolAccountStatementCache with mocked Redis and settings."""
     with patch(
-        "mattilda_challenge.infrastructure.adapters.school_account_statement_cache.redis._settings"
-    ) as mock_settings:
-        mock_settings.cache_ttl_seconds = 300
+        "mattilda_challenge.infrastructure.adapters.school_account_statement_cache.redis.get_settings"
+    ) as mock_get_settings:
+        mock_get_settings.return_value.cache_ttl_seconds = 300
         return RedisSchoolAccountStatementCache(mock_redis)
 
 

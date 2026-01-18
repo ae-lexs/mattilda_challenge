@@ -22,7 +22,6 @@ from mattilda_challenge.domain.exceptions import InvalidSchoolIdError
 from mattilda_challenge.domain.value_objects import SchoolId
 
 logger = logging.getLogger(__name__)
-_settings = get_settings()
 
 
 class RedisSchoolAccountStatementCache(SchoolAccountStatementCache):
@@ -36,7 +35,7 @@ class RedisSchoolAccountStatementCache(SchoolAccountStatementCache):
 
     def __init__(self, redis_client: Redis):
         self._redis = redis_client
-        self._ttl = _settings.cache_ttl_seconds
+        self._ttl = get_settings().cache_ttl_seconds
 
     async def get(self, school_id: SchoolId) -> SchoolAccountStatement | None:
         """Retrieve cached school account statement."""

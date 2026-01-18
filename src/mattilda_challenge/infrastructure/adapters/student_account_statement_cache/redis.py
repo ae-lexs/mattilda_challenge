@@ -22,7 +22,6 @@ from mattilda_challenge.domain.exceptions import InvalidStudentIdError
 from mattilda_challenge.domain.value_objects import StudentId
 
 logger = logging.getLogger(__name__)
-_settings = get_settings()
 
 
 class RedisStudentAccountStatementCache(StudentAccountStatementCache):
@@ -37,7 +36,7 @@ class RedisStudentAccountStatementCache(StudentAccountStatementCache):
 
     def __init__(self, redis_client: Redis):
         self._redis = redis_client
-        self._ttl = _settings.cache_ttl_seconds
+        self._ttl = get_settings().cache_ttl_seconds
 
     async def get(self, student_id: StudentId) -> StudentAccountStatement | None:
         """Retrieve cached student account statement."""

@@ -44,13 +44,8 @@ async def redis_client() -> Redis:
 @pytest.fixture
 async def cache(redis_client: Redis) -> RedisStudentAccountStatementCache:
     """Provide RedisStudentAccountStatementCache with real Redis."""
-    # Patch settings for test TTL
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(
-            "mattilda_challenge.infrastructure.adapters.student_account_statement_cache.redis._settings.cache_ttl_seconds",
-            300,
-        )
-        yield RedisStudentAccountStatementCache(redis_client)
+    # Settings are loaded from environment in integration tests
+    yield RedisStudentAccountStatementCache(redis_client)
 
 
 @pytest.fixture
