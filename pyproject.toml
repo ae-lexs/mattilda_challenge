@@ -102,6 +102,7 @@ omit = [
     "src/mattilda_challenge/application/filters.py",
     "src/mattilda_challenge/application/ports/*",
     "src/mattilda_challenge/infrastructure/adapters/school_account_statement_cache/null.py",
+    "src/mattilda_challenge/infrastructure/adapters/student_account_statement_cache/null.py",
     "src/mattilda_challenge/infrastructure/postgres/database.py",
     "src/mattilda_challenge/infrastructure/postgres/models/*",
     "src/mattilda_challenge/infrastructure/redis/client.py",

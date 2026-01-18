@@ -16,6 +16,10 @@ from mattilda_challenge.infrastructure.adapters.school_repository import (
     InMemorySchoolRepository,
     PostgresSchoolRepository,
 )
+from mattilda_challenge.infrastructure.adapters.student_account_statement_cache import (
+    NullStudentAccountStatementCache,
+    RedisStudentAccountStatementCache,
+)
 from mattilda_challenge.infrastructure.adapters.student_repository import (
     InMemoryStudentRepository,
     PostgresStudentRepository,
@@ -41,6 +45,9 @@ __all__ = [
     # School Repository
     "InMemorySchoolRepository",
     "PostgresSchoolRepository",
+    # Student Account Statement Cache
+    "NullStudentAccountStatementCache",
+    "RedisStudentAccountStatementCache",
     # Student Repository
     "InMemoryStudentRepository",
     "PostgresStudentRepository",
