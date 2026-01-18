@@ -7,18 +7,15 @@ integration tests that require a real PostgreSQL database.
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Generator
 from datetime import UTC, datetime
 from decimal import Decimal
 from uuid import UUID
 
 import pytest
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
+from sqlalchemy import create_engine, text
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from mattilda_challenge.domain.entities import Invoice
 from mattilda_challenge.domain.value_objects import (
@@ -41,42 +38,78 @@ from mattilda_challenge.infrastructure.postgres.models import (
 # In Docker: db:5432, locally: localhost:5432
 _db_host = os.getenv("DB_HOST", "db")
 TEST_DATABASE_URL = f"postgresql+asyncpg://user:pass@{_db_host}:5432/mattilda"
+TEST_DATABASE_URL_SYNC = f"postgresql://user:pass@{_db_host}:5432/mattilda"
 
 
-@pytest.fixture(scope="session")
-def engine() -> AsyncEngine:
-    """Create async engine for test database."""
-    return create_async_engine(
+@pytest.fixture
+def engine() -> Generator[AsyncEngine]:
+    """Create async engine for test database.
+
+    Function-scoped to ensure each test gets a fresh engine in its own
+    event loop, avoiding 'Future attached to different loop' errors.
+    Uses NullPool to disable connection pooling.
+    """
+    eng = create_async_engine(
         TEST_DATABASE_URL,
         echo=False,
-        pool_pre_ping=True,
+        poolclass=NullPool,  # Disable pooling - each test gets fresh connections
     )
+    yield eng
+    eng.sync_engine.dispose()
 
 
-@pytest.fixture(scope="session")
-def session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
-    """Create session factory for test database."""
-    return async_sessionmaker(
-        engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_database() -> Generator[None]:
+    """
+    Clean up test data at the start and end of the test session.
+
+    Uses synchronous SQLAlchemy to avoid event loop issues with session-scoped
+    async fixtures in pytest-asyncio.
+    """
+    sync_engine = create_engine(TEST_DATABASE_URL_SYNC)
+
+    with sync_engine.connect() as conn:
+        # Truncate all tables in correct order (respect foreign keys)
+        conn.execute(text("TRUNCATE payments, invoices, students, schools CASCADE"))
+        conn.commit()
+
+    yield
+
+    # Cleanup after all tests
+    with sync_engine.connect() as conn:
+        conn.execute(text("TRUNCATE payments, invoices, students, schools CASCADE"))
+        conn.commit()
+
+    sync_engine.dispose()
 
 
 @pytest.fixture
 async def db_session(
-    session_factory: async_sessionmaker[AsyncSession],
+    engine: AsyncEngine,
 ) -> AsyncGenerator[AsyncSession]:
     """
-    Provide database session for each test.
+    Provide database session for each test with proper transaction isolation.
 
-    Each test runs in a transaction that is rolled back after the test,
-    ensuring test isolation without needing to clean up data.
+    Uses connection-level transaction that is always rolled back at the end,
+    ensuring complete test isolation. The session is bound directly to the
+    connection's transaction.
     """
-    async with session_factory() as session, session.begin():
+    # Get a connection and start a transaction at the connection level
+    conn = await engine.connect()
+    trans = await conn.begin()
+
+    # Create session bound to this connection
+    session = AsyncSession(bind=conn, expire_on_commit=False)
+
+    try:
         yield session
-        # Rollback after test (implicit on context exit without commit)
-        await session.rollback()
+    finally:
+        # Close session first (doesn't affect the transaction)
+        await session.close()
+        # Rollback the connection-level transaction - this discards ALL changes
+        await trans.rollback()
+        # Close the connection
+        await conn.close()
 
 
 @pytest.fixture

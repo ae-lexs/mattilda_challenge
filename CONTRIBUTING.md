@@ -1028,6 +1028,144 @@ async def test_find_invoices_by_school_id_unit(memory_invoice_repo):
     # This test would give false confidence - the filter is silently ignored!
 ```
 
+### 10. Integration Test Isolation Strategy
+
+Integration tests run against a real PostgreSQL database. To ensure **test isolation** (each test sees a clean database state), we use the **connection-level transaction rollback pattern**.
+
+#### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Test Session Start                          │
+├─────────────────────────────────────────────────────────────────┤
+│  cleanup_database fixture (session-scoped, sync)                │
+│  └─ TRUNCATE all tables                                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Test 1                                                   │   │
+│  │  1. Create fresh engine (function-scoped, NullPool)     │   │
+│  │  2. Get connection, BEGIN transaction                   │   │
+│  │  3. Create session bound to connection                  │   │
+│  │  4. Run test (INSERT, UPDATE, SELECT)                   │   │
+│  │  5. ROLLBACK transaction ← All changes discarded        │   │
+│  │  6. Close connection                                    │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Test 2                                                   │   │
+│  │  (Same pattern - sees empty database)                   │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  cleanup_database fixture teardown                              │
+│  └─ TRUNCATE all tables (final cleanup)                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Key Implementation Details
+
+| Component | Scope | Purpose |
+|-----------|-------|---------|
+| `cleanup_database` | Session | Truncates tables before/after all tests (sync to avoid event loop issues) |
+| `engine` | Function | Fresh async engine per test with `NullPool` (avoids "Future attached to different loop" errors) |
+| `db_session` | Function | Session bound to connection-level transaction, always rolled back |
+
+#### Why These Choices?
+
+**1. Function-scoped engine with NullPool:**
+```python
+@pytest.fixture
+def engine() -> Generator[AsyncEngine]:
+    eng = create_async_engine(
+        TEST_DATABASE_URL,
+        poolclass=NullPool,  # No connection pooling
+    )
+    yield eng
+    eng.sync_engine.dispose()
+```
+
+- pytest-asyncio creates a **new event loop per test** by default
+- Session-scoped async engines hold connections tied to the original event loop
+- Using these connections in a different loop causes `RuntimeError: Future attached to different loop`
+- `NullPool` ensures fresh connections each time, avoiding stale loop references
+
+**2. Connection-level transaction rollback:**
+```python
+@pytest.fixture
+async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
+    conn = await engine.connect()
+    trans = await conn.begin()
+    session = AsyncSession(bind=conn, expire_on_commit=False)
+    try:
+        yield session
+    finally:
+        await session.close()
+        await trans.rollback()  # Discard ALL changes
+        await conn.close()
+```
+
+- Transaction started at **connection level**, not session level
+- Session is bound to the connection, so all operations go through the same transaction
+- `rollback()` at connection level discards everything, regardless of any `flush()` calls in tests
+- More reliable than session-level rollback which can be affected by autocommit behavior
+
+**3. Sync cleanup fixture:**
+```python
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_database() -> Generator[None]:
+    sync_engine = create_engine(TEST_DATABASE_URL_SYNC)
+    with sync_engine.connect() as conn:
+        conn.execute(text("TRUNCATE payments, invoices, students, schools CASCADE"))
+        conn.commit()
+    yield
+    # ... cleanup after tests
+```
+
+- Session-scoped async fixtures can't be reused across different event loops
+- Using sync SQLAlchemy for session-level cleanup avoids this issue
+- Truncates tables to remove any leftover data from previous test runs
+
+#### Test Data Fixtures
+
+Test data fixtures should use **fixed, explicit values** (per CONTRIBUTING.md guidelines):
+
+```python
+@pytest.fixture
+def fixed_school_id() -> SchoolId:
+    return SchoolId(value=UUID("11111111-1111-1111-1111-111111111111"))
+
+@pytest.fixture
+async def saved_school(db_session: AsyncSession, fixed_school_id: SchoolId) -> SchoolModel:
+    school = SchoolModel(id=fixed_school_id.value, name="Test School", ...)
+    db_session.add(school)
+    await db_session.flush()  # Write to DB (within transaction)
+    return school
+```
+
+- Use `flush()` to write data to database (visible within transaction)
+- Never call `commit()` in test fixtures - the transaction will be rolled back
+- Fixed UUIDs make tests reproducible and debugging easier
+
+#### Running Integration Tests
+
+```bash
+# Run only integration tests
+make test-integration
+
+# Run specific integration test file
+docker compose run --rm api uv run pytest tests/integration/... -v -m integration
+```
+
+#### Troubleshooting
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `UniqueViolationError: duplicate key` | Data from previous test not rolled back | Check `db_session` fixture is using connection-level transaction |
+| `Future attached to different loop` | Session-scoped async engine | Use function-scoped engine with `NullPool` |
+| `fixture reused across different async loops` | Session-scoped async fixture | Use sync fixture for session-scoped cleanup |
+| Test sees data from other tests | Transaction not rolling back | Ensure `rollback()` is in `finally` block |
+
 ---
 
 ## Database Guidelines

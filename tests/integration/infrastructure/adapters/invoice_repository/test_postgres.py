@@ -348,13 +348,16 @@ class TestPostgresInvoiceRepositoryFindPagination:
     ) -> None:
         """Test find respects pagination offset."""
         # Create multiple invoices
+        # Note: due_date must be after created_at (fixed_time = 2024-01-15)
         for i in range(5):
             invoice = InvoiceModel(
                 id=UUID(f"1000000{i}-0000-0000-0000-000000000000"),
                 student_id=saved_student.id,
                 invoice_number=f"INV-2024-PAG{i:03d}",
                 amount=Decimal(f"{100 * (i + 1)}.00"),
-                due_date=datetime(2024, i + 1, 1, 0, 0, 0, tzinfo=UTC),
+                due_date=datetime(
+                    2024, i + 2, 1, 0, 0, 0, tzinfo=UTC
+                ),  # Start from Feb
                 description=f"Pagination test invoice {i}",
                 late_fee_policy_monthly_rate=standard_late_fee_policy.monthly_rate,
                 status="pending",
@@ -484,10 +487,11 @@ class TestPostgresInvoiceRepositoryFindSorting:
         standard_late_fee_policy: LateFeePolicy,
     ) -> None:
         """Test find sorts by due_date descending."""
+        # Note: due_date must be after created_at (fixed_time = 2024-01-15)
         dates = [
-            datetime(2024, 3, 1, 0, 0, 0, tzinfo=UTC),
-            datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC),
+            datetime(2024, 4, 1, 0, 0, 0, tzinfo=UTC),
             datetime(2024, 2, 1, 0, 0, 0, tzinfo=UTC),
+            datetime(2024, 3, 1, 0, 0, 0, tzinfo=UTC),
         ]
         for i, due_date in enumerate(dates):
             invoice = InvoiceModel(
