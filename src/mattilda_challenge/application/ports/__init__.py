@@ -11,6 +11,7 @@ from mattilda_challenge.application.ports.student_account_statement_cache import
 )
 from mattilda_challenge.application.ports.student_repository import StudentRepository
 from mattilda_challenge.application.ports.time_provider import TimeProvider
+from mattilda_challenge.application.ports.unit_of_work import UnitOfWork
 
 __all__ = [
     "InvoiceRepository",
@@ -20,4 +21,5 @@ __all__ = [
     "StudentAccountStatementCache",
     "StudentRepository",
     "TimeProvider",
+    "UnitOfWork",
 ]
