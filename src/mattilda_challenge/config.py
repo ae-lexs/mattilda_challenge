@@ -64,5 +64,20 @@ class Settings(BaseSettings):
         return self.database_url.replace("postgresql+asyncpg://", "postgresql://")
 
 
-# Singleton instance - import this in infrastructure/entrypoints
-settings = Settings()
+_settings: Settings | None = None
+
+
+def get_settings() -> Settings:
+    """Get application settings (lazy singleton).
+
+    Settings are instantiated on first access, not at module import time.
+    This allows tests to import the module without requiring environment
+    variables to be set.
+
+    Returns:
+        Application settings instance.
+    """
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings
