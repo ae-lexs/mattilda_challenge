@@ -6,6 +6,7 @@ integration tests that require a real PostgreSQL database.
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -36,10 +37,10 @@ from mattilda_challenge.infrastructure.postgres.models import (
     StudentModel,
 )
 
-# Test database URL - uses test database
-TEST_DATABASE_URL = (
-    "postgresql+asyncpg://postgres:postgres@localhost:5432/mattilda_test"
-)
+# Test database URL - uses main database with transaction rollback for isolation
+# In Docker: db:5432, locally: localhost:5432
+_db_host = os.getenv("DB_HOST", "db")
+TEST_DATABASE_URL = f"postgresql+asyncpg://user:pass@{_db_host}:5432/mattilda"
 
 
 @pytest.fixture(scope="session")
