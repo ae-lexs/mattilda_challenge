@@ -13,6 +13,7 @@ This document provides detailed coding standards, style guidelines, and contribu
 - [Development Setup](#development-setup)
 - [Code Style Standards](#code-style-standards)
 - [Domain Invariants (Must Not Be Violated)](#domain-invariants-must-not-be-violated)
+- [UseCase Guidelines](#usecase-guidelines)
 - [REST API Guidelines (Must Follow)](#rest-api-guidelines-must-follow)
 - [Documentation Guidelines](#documentation-guidelines)
 - [Unicode & Encoding](#unicode--encoding)
@@ -179,6 +180,96 @@ async def record_payment_broken(
 - ❌ Raising domain exceptions from repositories (return `None` instead)
 - ❌ Validating `sort_by` in repositories (do it in entrypoint)
 - ❌ Unit testing cross-aggregate filters with in-memory repositories
+
+---
+
+## UseCase Guidelines
+
+Use cases are the **application layer** in Clean Architecture—they orchestrate domain logic and infrastructure without containing business rules. See [ADR-010: UseCase Pattern](docs/adrs/ADR-010-usecase-pattern.md) for complete rationale.
+
+### Quick Reference: How We Write Use Cases
+
+```python
+class CreateInvoiceUseCase:
+    """One class per business operation."""
+
+    async def execute(
+        self,
+        uow: UnitOfWork,        # Transaction boundary
+        request: CreateRequest, # Immutable request DTO
+        now: datetime,          # Injected time (never datetime.now())
+    ) -> Invoice:               # Returns domain entity
+        async with uow:
+            # 1. Fetch and validate
+            student = await uow.students.get_by_id(request.student_id)
+            if student is None:
+                raise StudentNotFoundError(...)  # Domain exception
+
+            # 2. Domain operation (entity validates business rules)
+            invoice = Invoice.create(..., now=now)
+
+            # 3. Persist
+            await uow.invoices.save(invoice)
+
+            # 4. Commit atomically
+            await uow.commit()
+            return invoice
+```
+
+### Key Rules
+
+| Rule | Why |
+|------|-----|
+| **One class, one operation** | Single responsibility, easy to test |
+| **UoW passed to execute()** | Explicit transaction boundary |
+| **Time as parameter** | Consistent `now` across entire operation |
+| **Request DTOs are frozen** | Immutable, prevents mutation bugs |
+| **Return domain entities** | No response DTOs needed (mappers handle conversion) |
+| **Raise domain exceptions** | Global handlers map to HTTP status |
+| **Never catch exceptions internally** | Let them propagate to global handlers |
+
+### Error Handling
+
+**Critical**: Use cases do NOT catch exceptions except to enrich context before re-raising.
+
+```python
+# ✅ Correct: Let exceptions propagate
+if entity is None:
+    raise EntityNotFoundError(...)  # Propagates to global handler
+
+# ❌ Wrong: Catching exceptions internally
+try:
+    result = await operation()
+except SomeDomainError:
+    return None  # Swallows error, defeats global handler pattern
+```
+
+### Concurrency Safety
+
+When operations read aggregate data (e.g., total payments), ensure queries execute within the same transaction lock:
+
+```python
+async with uow:
+    # Lock the invoice row
+    invoice = await uow.invoices.get_by_id(id, for_update=True)
+    
+    # This MUST use the same session/transaction
+    total_paid = await uow.payments.get_total_by_invoice(invoice.id)
+```
+
+### Request DTO Pattern
+
+```python
+# application/use_cases/requests.py
+@dataclass(frozen=True, slots=True)
+class CreateInvoiceRequest:
+    student_id: StudentId   # Domain value objects
+    amount: Decimal         # Never floats
+    due_date: datetime      # UTC-validated
+    description: str
+```
+
+For complete examples and detailed rationale, see [ADR-010](docs/adrs/ADR-010-usecase-pattern.md).
 
 ---
 
@@ -1034,33 +1125,46 @@ Integration tests run against a real PostgreSQL database. To ensure **test isola
 
 #### How It Works
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Test Session Start                          │
-├─────────────────────────────────────────────────────────────────┤
-│  cleanup_database fixture (session-scoped, sync)                │
-│  └─ TRUNCATE all tables                                         │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Test 1                                                   │   │
-│  │  1. Create fresh engine (function-scoped, NullPool)     │   │
-│  │  2. Get connection, BEGIN transaction                   │   │
-│  │  3. Create session bound to connection                  │   │
-│  │  4. Run test (INSERT, UPDATE, SELECT)                   │   │
-│  │  5. ROLLBACK transaction ← All changes discarded        │   │
-│  │  6. Close connection                                    │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Test 2                                                   │   │
-│  │  (Same pattern - sees empty database)                   │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                                                                 │
-├─────────────────────────────────────────────────────────────────┤
-│  cleanup_database fixture teardown                              │
-│  └─ TRUNCATE all tables (final cleanup)                         │
-└─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Session["Test Session"]
+        direction TB
+
+        Start["Test Session Start"]
+
+        subgraph Setup["cleanup_database fixture (session-scoped, sync)"]
+            Truncate1["TRUNCATE all tables"]
+        end
+
+        subgraph Test1["Test 1 (function-scoped)"]
+            T1S1["1. Create fresh engine (NullPool)"]
+            T1S2["2. Get connection, BEGIN transaction"]
+            T1S3["3. Create session bound to connection"]
+            T1S4["4. Run test (INSERT, UPDATE, SELECT)"]
+            T1S5["5. ROLLBACK transaction ← All changes discarded"]
+            T1S6["6. Close connection"]
+
+            T1S1 --> T1S2 --> T1S3 --> T1S4 --> T1S5 --> T1S6
+        end
+
+        subgraph Test2["Test 2 (function-scoped)"]
+            T2["Same pattern - sees empty database"]
+        end
+
+        subgraph Teardown["cleanup_database fixture teardown"]
+            Truncate2["TRUNCATE all tables (final cleanup)"]
+        end
+
+        Start --> Setup
+        Setup --> Test1
+        Test1 --> Test2
+        Test2 --> Teardown
+    end
+
+    style Setup fill:#e1f5fe
+    style Teardown fill:#e1f5fe
+    style Test1 fill:#f3e5f5
+    style Test2 fill:#f3e5f5
 ```
 
 #### Key Implementation Details
