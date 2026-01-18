@@ -452,7 +452,7 @@ from fastapi import APIRouter
 
 # 3. Local application imports
 from mattilda_challenge.domain.entities import Invoice
-from mattilda_challenge.domain.ports import InvoiceRepository
+from mattilda_challenge.application.ports import InvoiceRepository
 ```
 
 ### 3. Type Hints
