@@ -660,7 +660,7 @@ All ADRs have been written and accepted. Implementation is in progress.
 - ✅ CONTRIBUTING.md with coding standards
 
 **Implementation Roadmap**:
-- [ ] **Stage 1**: Domain model with entities and value objects
+- [x] **Stage 1**: Domain model with entities and value objects
 - [ ] **Stage 2**: Repository pattern and database persistence
 - [ ] **Stage 3**: Use cases and application logic
 - [ ] **Stage 4**: REST API endpoints with OpenAPI docs
