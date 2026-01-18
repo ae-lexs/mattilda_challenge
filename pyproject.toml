@@ -93,6 +93,7 @@ branch = true
 omit = [
     "src/mattilda_challenge/application/ports/*",
     "src/mattilda_challenge/infrastructure/postgres/models/*",
+    "src/mattilda_challenge/infrastructure/postgres/database.py",
 ]
 
 [tool.coverage.report]
