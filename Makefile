@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help up down logs ps sh lock sync test test-file test-coverage lint lint-fix typecheck fmt check migrate migrate-new
+.PHONY: help up down logs ps sh lock sync test test-unit test-integration test-all test-file test-coverage lint lint-fix typecheck fmt check migrate migrate-new
 
 help:
 	@echo "mattilda-challenge commands:"
@@ -17,9 +17,12 @@ help:
 	@echo "  make sync           Install deps from lock (frozen)"
 	@echo ""
 	@echo "Testing:"
-	@echo "  make test           Run all tests"
+	@echo "  make test           Run unit tests (default, no DB required)"
+	@echo "  make test-unit      Run unit tests only (alias for test)"
+	@echo "  make test-integration  Run integration tests (requires DB)"
+	@echo "  make test-all       Run all tests (unit + integration)"
 	@echo "  make test-file FILE=path  Run specific test file"
-	@echo "  make test-coverage  Run tests with coverage report"
+	@echo "  make test-coverage  Run tests with coverage report (unit only)"
 	@echo ""
 	@echo "Code Quality:"
 	@echo "  make lint           Ruff check"
@@ -56,6 +59,14 @@ sync:
 
 test:
 	docker compose run --rm api uv run pytest
+
+test-unit: test
+
+test-integration:
+	docker compose run --rm api uv run pytest -m integration
+
+test-all:
+	docker compose run --rm api uv run pytest -m ""
 
 test-file:
 	@if [ -z "$(FILE)" ]; then \

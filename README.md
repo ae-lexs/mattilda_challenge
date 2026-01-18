@@ -192,14 +192,14 @@ flowchart TD
     
     subgraph Application["Application Layer"]
         A1[Use Cases]
-        A2[Ports: TimeProvider, Cache]
+        A2[Ports: Repositories, TimeProvider, Cache]
         A3[Application DTOs]
+        A4[Filters & Pagination]
     end
-    
+
     subgraph Domain["Domain Layer"]
         D1[Entities: Invoice, Student, School, Payment]
         D2[Value Objects: InvoiceId, LateFeePolicy]
-        D3[Ports: Repository Interfaces]
         D4[Domain Exceptions]
     end
     
@@ -270,11 +270,6 @@ mattilda_challenge/
 │       │   │   ├── invoice_status.py
 │       │   │   ├── student_status.py
 │       │   │   └── late_fee_policy.py
-│       │   ├── ports/
-│       │   │   ├── school_repository.py
-│       │   │   ├── student_repository.py
-│       │   │   ├── invoice_repository.py
-│       │   │   └── payment_repository.py
 │       │   └── exceptions.py
 │       ├── application/
 │       │   ├── use_cases/
@@ -286,7 +281,13 @@ mattilda_challenge/
 │       │   │   └── get_school_account_statement.py
 │       │   ├── ports/
 │       │   │   ├── time_provider.py
+│       │   │   ├── school_repository.py
+│       │   │   ├── student_repository.py
+│       │   │   ├── invoice_repository.py
+│       │   │   ├── payment_repository.py
 │       │   │   └── account_statement_cache.py
+│       │   ├── filters.py              # Entity-specific filter dataclasses
+│       │   ├── common.py               # Page[T], PaginationParams, SortParams
 │       │   └── dtos/
 │       │       └── account_statement.py
 │       ├── infrastructure/
@@ -298,10 +299,19 @@ mattilda_challenge/
 │       │   ├── redis/
 │       │   │   └── client.py
 │       │   ├── adapters/
-│       │   │   ├── school_repository.py
-│       │   │   ├── student_repository.py
-│       │   │   ├── invoice_repository.py
-│       │   │   ├── payment_repository.py
+│       │   │   ├── school_repository/
+│       │   │   │   ├── postgres.py
+│       │   │   │   └── in_memory.py
+│       │   │   ├── student_repository/
+│       │   │   │   ├── postgres.py
+│       │   │   │   └── in_memory.py
+│       │   │   ├── invoice_repository/
+│       │   │   │   ├── postgres.py
+│       │   │   │   └── in_memory.py
+│       │   │   ├── payment_repository/
+│       │   │   │   ├── postgres.py
+│       │   │   │   └── in_memory.py
+│       │   │   ├── time_provider.py
 │       │   │   └── account_statement_cache.py
 │       │   └── observability/
 │       │       ├── logging.py
@@ -381,11 +391,12 @@ All development tasks are executed through Docker containers using `make` comman
 | `make seed` | Load seed data into database |
 | `make db-shell` | Open PostgreSQL shell |
 | **Testing** | |
-| `make test` | Run all tests |
-| `make test-unit` | Run unit tests only |
-| `make test-integration` | Run integration tests only |
+| `make test` | Run unit tests (default, no DB required) |
+| `make test-unit` | Run unit tests only (alias for test) |
+| `make test-integration` | Run integration tests (requires DB) |
+| `make test-all` | Run all tests (unit + integration) |
 | `make test-file FILE=...` | Run specific test file |
-| `make test-coverage` | Run tests with coverage report |
+| `make test-coverage` | Run tests with coverage (unit only) |
 | **Code Quality** | |
 | `make lint` | Run ruff check |
 | `make lint-fix` | Run ruff with auto-fix |
@@ -516,14 +527,15 @@ All significant architectural decisions are documented in ADRs:
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-001](docs/adrs/ADR-001-project-initialization.md) | Project Initialization & Structure | Accepted |
-| [ADR-002](docs/adrs/ADR-002-domain-model.md) | Domain Model Design | Accepted |
-| [ADR-003](docs/adrs/ADR-003-time-provider.md) | Time Provider Interface and Implementation | Accepted |
-| [ADR-004](docs/adrs/ADR-004-postgresql-persistence.md) | PostgreSQL Persistence with SQLAlchemy and Alembic | Accepted |
+| [ADR-001](docs/adrs/ADR-001-project-initialization.md) | Project Initialization & Structure | Implemented |
+| [ADR-002](docs/adrs/ADR-002-domain-model.md) | Domain Model Design | Implemented |
+| [ADR-003](docs/adrs/ADR-003-time-provider.md) | Time Provider Interface and Implementation | Implemented |
+| [ADR-004](docs/adrs/ADR-004-postgresql-persistence.md) | PostgreSQL Persistence with SQLAlchemy and Alembic | Implemented |
 | [ADR-005](docs/adrs/ADR-005-rest-api-design.md) | REST API Design | Accepted |
 | [ADR-006](docs/adrs/ADR-006-caching-strategy.md) | Redis Caching for Account Statements | Accepted |
-| [ADR-007](docs/adrs/ADR-007-pagination.md) | Offset-Based Pagination | Accepted |
+| [ADR-007](docs/adrs/ADR-007-pagination.md) | Offset-Based Pagination | Implemented |
 | [ADR-008](docs/adrs/ADR-008-observability.md) | Observability Strategy | Accepted |
+| [ADR-009](docs/ADR-009.md) | Repository Port and Adapter Implementation | Implemented |
 
 ---
 
@@ -655,16 +667,18 @@ For detailed testing guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md#testing-g
 All ADRs have been written and accepted. Implementation is in progress.
 
 **Completed**:
-- ✅ All 8 ADRs written and accepted
+- ✅ All 9 ADRs written and accepted
 - ✅ Project structure and core invariants defined
 - ✅ CONTRIBUTING.md with coding standards
 - ✅ ADR-001: Project Initialization & Structure
 - ✅ ADR-002: Domain Model Design
 - ✅ ADR-003: Time Provider (port and adapters)
+- ✅ ADR-007: Pagination types (`PaginationParams`, `SortParams`, `Page[T]`, filter dataclasses)
+- ✅ ADR-009: Repository ports, PostgreSQL adapters, and in-memory adapters (with unit and integration tests)
 
 **Implementation Roadmap**:
 - [x] **Stage 1**: Domain model with entities and value objects
-- [ ] **Stage 2**: Repository pattern and database persistence
+- [x] **Stage 2**: Repository pattern and database persistence
 - [ ] **Stage 3**: Use cases and application logic
 - [ ] **Stage 4**: REST API endpoints with OpenAPI docs
 - [ ] **Stage 5**: Caching and pagination

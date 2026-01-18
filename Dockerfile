@@ -16,6 +16,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_NO_CACHE=1 \
     PYTHONPATH=/app/src
 
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
 # 1) Install dependencies in a cached layer (only lock + pyproject copied)
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-install-project
@@ -25,10 +28,27 @@ COPY src ./src
 COPY tests ./tests
 RUN uv sync --frozen
 
+# 3) Copy Alembic configuration and migrations
+COPY alembic.ini .
+COPY alembic/ ./alembic/
+
+# 4) Copy and set up migration script
+COPY scripts/run_alembic_migrations.sh /run_alembic_migrations.sh
+RUN chmod +x /run_alembic_migrations.sh
+
+# 5) Change ownership to non-root user
+RUN chown -R appuser:appuser /app /run_alembic_migrations.sh
+
+# 6) Switch to non-root user
+USER appuser
+
 EXPOSE 8000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
-CMD ["uv", "run", "uvicorn", "payments_core.entrypoints.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Set entrypoint to run migrations before starting the app
+ENTRYPOINT ["/run_alembic_migrations.sh"]
+
+CMD ["uv", "run", "uvicorn", "mattilda_challenge.entrypoints.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

@@ -95,6 +95,9 @@ See [ADR-002: Domain Model Design](docs/adrs/ADR-002-domain-model.md) for comple
 | ✅ **Payments are append-only** | No updates or deletes after creation | [ADR-002](docs/adrs/ADR-002-domain-model.md#5-payment-entity) |
 | ✅ **Overdue is calculated** | Never stored as status, always computed from `due_date` and `now` | [ADR-002](docs/adrs/ADR-002-domain-model.md#4-invoice-entity) |
 | ✅ **Time is injected** | Domain never calls `datetime.now()`, always parameter from `TimeProvider` | [ADR-003](docs/adrs/ADR-003-time-provider.md) |
+| ✅ **`sort_by` validated in entrypoint** | Repositories trust `sort_by` is valid; validation happens in route handlers | [ADR-009](docs/adrs/ADR-009-repository-adapters.md#6-sort-validation-responsibility) |
+| ✅ **Repositories never raise domain exceptions** | Return `None` for not-found; let infra errors propagate; use cases raise domain errors | [ADR-009](docs/adrs/ADR-009-repository-adapters.md#5-error-handling) |
+| ✅ **Cross-aggregate filters via integration tests** | Filters spanning entities (e.g., `school_id` on invoices) must be tested with PostgreSQL | [ADR-009](docs/adrs/ADR-009-repository-adapters.md#43-cross-aggregate-filter-testing-guidelines) |
 
 ### Responsibility Boundaries
 
@@ -108,6 +111,8 @@ Know where logic lives to avoid architectural violations:
 | Validation | `__post_init__` + guard functions | `validate_utc_timestamp()`, Decimal type checks |
 | State transitions | Use cases orchestrate, entities validate | Use case updates status, entity validates transition |
 | Late fees | `LateFeePolicy` value object | Formula, rounding, "original amount" rule |
+| Sort field validation | Entrypoint (route handlers) | FastAPI Query enum validation, 422 on invalid `sort_by` |
+| Not-found errors | Use cases | Repository returns `None`, use case raises `EntityNotFoundError` |
 
 ### Transaction Boundaries (Critical)
 
@@ -171,6 +176,9 @@ async def record_payment_broken(
 - ❌ Reading `datetime.now()` directly anywhere
 - ❌ Using floats for money "temporarily" (no temporary violations)
 - ❌ Storing calculated fields (overdue, balance_due)
+- ❌ Raising domain exceptions from repositories (return `None` instead)
+- ❌ Validating `sort_by` in repositories (do it in entrypoint)
+- ❌ Unit testing cross-aggregate filters with in-memory repositories
 
 ---
 
@@ -452,7 +460,7 @@ from fastapi import APIRouter
 
 # 3. Local application imports
 from mattilda_challenge.domain.entities import Invoice
-from mattilda_challenge.domain.ports import InvoiceRepository
+from mattilda_challenge.application.ports import InvoiceRepository
 ```
 
 ### 3. Type Hints
@@ -965,6 +973,198 @@ def test_invoice_mark_as_paid_from_paid_raises():
     
     assert "Cannot mark as paid from status: paid" in str(exc_info.value)
 ```
+
+### 9. Repository Testing Guidelines
+
+**INVARIANT**: Cross-aggregate filters must be tested via integration tests only.
+
+See [ADR-009: Repository Adapters](docs/adrs/ADR-009-repository-adapters.md#43-cross-aggregate-filter-testing-guidelines) for complete rationale.
+
+| Filter Type | Unit Test (In-Memory) | Integration Test (PostgreSQL) |
+|-------------|----------------------|------------------------------|
+| Same-entity filters (`student_id`, `status`) | ✅ Test thoroughly | ✅ Verify query correctness |
+| Cross-aggregate filters (`school_id` on invoices) | ❌ Skip or mock | ✅ **Required** |
+| Date range filters | ✅ Test boundary conditions | ✅ Verify SQL behavior |
+
+```python
+# ✅ CORRECT: Unit test for same-entity filter
+async def test_find_invoices_by_student_id(memory_invoice_repo):
+    """Unit test - student_id is on Invoice entity."""
+    invoice = create_test_invoice(student_id=StudentId(uuid4()))
+    await memory_invoice_repo.save(invoice)
+    
+    page = await memory_invoice_repo.find(
+        filters=InvoiceFilters(student_id=invoice.student_id.value),
+        pagination=PaginationParams(offset=0, limit=10),
+        sort=SortParams(sort_by="created_at", sort_order="desc"),
+    )
+    
+    assert len(page.items) == 1
+
+
+# ✅ CORRECT: Integration test for cross-aggregate filter
+@pytest.mark.integration
+async def test_find_invoices_by_school_id(postgres_session):
+    """Integration test - school_id requires join through Student."""
+    # Setup: create school, student, invoice in database
+    school = await create_school_in_db(postgres_session)
+    student = await create_student_in_db(postgres_session, school_id=school.id)
+    invoice = await create_invoice_in_db(postgres_session, student_id=student.id)
+    
+    repo = PostgresInvoiceRepository(postgres_session)
+    page = await repo.find(
+        filters=InvoiceFilters(school_id=school.id.value),
+        pagination=PaginationParams(offset=0, limit=10),
+        sort=SortParams(sort_by="created_at", sort_order="desc"),
+    )
+    
+    assert len(page.items) == 1
+    assert page.items[0].id == invoice.id
+
+
+# ❌ WRONG: Unit test for cross-aggregate filter
+async def test_find_invoices_by_school_id_unit(memory_invoice_repo):
+    """Don't do this - in-memory can't simulate cross-aggregate joins."""
+    # This test would give false confidence - the filter is silently ignored!
+```
+
+### 10. Integration Test Isolation Strategy
+
+Integration tests run against a real PostgreSQL database. To ensure **test isolation** (each test sees a clean database state), we use the **connection-level transaction rollback pattern**.
+
+#### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     Test Session Start                          │
+├─────────────────────────────────────────────────────────────────┤
+│  cleanup_database fixture (session-scoped, sync)                │
+│  └─ TRUNCATE all tables                                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Test 1                                                   │   │
+│  │  1. Create fresh engine (function-scoped, NullPool)     │   │
+│  │  2. Get connection, BEGIN transaction                   │   │
+│  │  3. Create session bound to connection                  │   │
+│  │  4. Run test (INSERT, UPDATE, SELECT)                   │   │
+│  │  5. ROLLBACK transaction ← All changes discarded        │   │
+│  │  6. Close connection                                    │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ Test 2                                                   │   │
+│  │  (Same pattern - sees empty database)                   │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  cleanup_database fixture teardown                              │
+│  └─ TRUNCATE all tables (final cleanup)                         │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Key Implementation Details
+
+| Component | Scope | Purpose |
+|-----------|-------|---------|
+| `cleanup_database` | Session | Truncates tables before/after all tests (sync to avoid event loop issues) |
+| `engine` | Function | Fresh async engine per test with `NullPool` (avoids "Future attached to different loop" errors) |
+| `db_session` | Function | Session bound to connection-level transaction, always rolled back |
+
+#### Why These Choices?
+
+**1. Function-scoped engine with NullPool:**
+```python
+@pytest.fixture
+def engine() -> Generator[AsyncEngine]:
+    eng = create_async_engine(
+        TEST_DATABASE_URL,
+        poolclass=NullPool,  # No connection pooling
+    )
+    yield eng
+    eng.sync_engine.dispose()
+```
+
+- pytest-asyncio creates a **new event loop per test** by default
+- Session-scoped async engines hold connections tied to the original event loop
+- Using these connections in a different loop causes `RuntimeError: Future attached to different loop`
+- `NullPool` ensures fresh connections each time, avoiding stale loop references
+
+**2. Connection-level transaction rollback:**
+```python
+@pytest.fixture
+async def db_session(engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
+    conn = await engine.connect()
+    trans = await conn.begin()
+    session = AsyncSession(bind=conn, expire_on_commit=False)
+    try:
+        yield session
+    finally:
+        await session.close()
+        await trans.rollback()  # Discard ALL changes
+        await conn.close()
+```
+
+- Transaction started at **connection level**, not session level
+- Session is bound to the connection, so all operations go through the same transaction
+- `rollback()` at connection level discards everything, regardless of any `flush()` calls in tests
+- More reliable than session-level rollback which can be affected by autocommit behavior
+
+**3. Sync cleanup fixture:**
+```python
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_database() -> Generator[None]:
+    sync_engine = create_engine(TEST_DATABASE_URL_SYNC)
+    with sync_engine.connect() as conn:
+        conn.execute(text("TRUNCATE payments, invoices, students, schools CASCADE"))
+        conn.commit()
+    yield
+    # ... cleanup after tests
+```
+
+- Session-scoped async fixtures can't be reused across different event loops
+- Using sync SQLAlchemy for session-level cleanup avoids this issue
+- Truncates tables to remove any leftover data from previous test runs
+
+#### Test Data Fixtures
+
+Test data fixtures should use **fixed, explicit values** (per CONTRIBUTING.md guidelines):
+
+```python
+@pytest.fixture
+def fixed_school_id() -> SchoolId:
+    return SchoolId(value=UUID("11111111-1111-1111-1111-111111111111"))
+
+@pytest.fixture
+async def saved_school(db_session: AsyncSession, fixed_school_id: SchoolId) -> SchoolModel:
+    school = SchoolModel(id=fixed_school_id.value, name="Test School", ...)
+    db_session.add(school)
+    await db_session.flush()  # Write to DB (within transaction)
+    return school
+```
+
+- Use `flush()` to write data to database (visible within transaction)
+- Never call `commit()` in test fixtures - the transaction will be rolled back
+- Fixed UUIDs make tests reproducible and debugging easier
+
+#### Running Integration Tests
+
+```bash
+# Run only integration tests
+make test-integration
+
+# Run specific integration test file
+docker compose run --rm api uv run pytest tests/integration/... -v -m integration
+```
+
+#### Troubleshooting
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `UniqueViolationError: duplicate key` | Data from previous test not rolled back | Check `db_session` fixture is using connection-level transaction |
+| `Future attached to different loop` | Session-scoped async engine | Use function-scoped engine with `NullPool` |
+| `fixture reused across different async loops` | Session-scoped async fixture | Use sync fixture for session-scoped cleanup |
+| Test sees data from other tests | Transaction not rolling back | Ensure `rollback()` is in `finally` block |
 
 ---
 
