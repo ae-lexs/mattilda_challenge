@@ -1,4 +1,4 @@
-"""Invoice adapters."""
+"""Invoice repository adapter implementations."""
 
 from mattilda_challenge.infrastructure.adapters.invoice_repository.in_memory import (
     InMemoryInvoiceRepository,
