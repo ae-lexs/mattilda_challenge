@@ -17,6 +17,7 @@ dependencies = [
     "pydantic-settings>=2.6.0",
     "sqlalchemy[asyncio]>=2.0.36",
     "asyncpg>=0.30.0",
+    "psycopg2-binary>=2.9.0",  # Sync driver for Alembic migrations (ADR-004)
     "alembic>=1.14.0",
     "redis>=5.2.0",
     "structlog>=24.1.0",
