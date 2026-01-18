@@ -381,11 +381,12 @@ All development tasks are executed through Docker containers using `make` comman
 | `make seed` | Load seed data into database |
 | `make db-shell` | Open PostgreSQL shell |
 | **Testing** | |
-| `make test` | Run all tests |
-| `make test-unit` | Run unit tests only |
-| `make test-integration` | Run integration tests only |
+| `make test` | Run unit tests (default, no DB required) |
+| `make test-unit` | Run unit tests only (alias for test) |
+| `make test-integration` | Run integration tests (requires DB) |
+| `make test-all` | Run all tests (unit + integration) |
 | `make test-file FILE=...` | Run specific test file |
-| `make test-coverage` | Run tests with coverage report |
+| `make test-coverage` | Run tests with coverage (unit only) |
 | **Code Quality** | |
 | `make lint` | Run ruff check |
 | `make lint-fix` | Run ruff with auto-fix |
