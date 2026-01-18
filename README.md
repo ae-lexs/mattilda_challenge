@@ -658,6 +658,9 @@ All ADRs have been written and accepted. Implementation is in progress.
 - ✅ All 8 ADRs written and accepted
 - ✅ Project structure and core invariants defined
 - ✅ CONTRIBUTING.md with coding standards
+- ✅ ADR-001: Project Initialization & Structure
+- ✅ ADR-002: Domain Model Design
+- ✅ ADR-003: Time Provider (port and adapters)
 
 **Implementation Roadmap**:
 - [x] **Stage 1**: Domain model with entities and value objects

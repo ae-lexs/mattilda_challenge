@@ -84,6 +84,7 @@ filterwarnings = [
 [tool.coverage.run]
 source = ["src/mattilda_challenge"]
 branch = true
+omit = ["src/mattilda_challenge/application/ports/*"]
 
 [tool.coverage.report]
 exclude_lines = [
