@@ -98,6 +98,7 @@ markers = [
 source = ["src/mattilda_challenge"]
 branch = true
 omit = [
+    "src/mattilda_challenge/application/dtos.py",
     "src/mattilda_challenge/application/filters.py",
     "src/mattilda_challenge/application/ports/*",
     "src/mattilda_challenge/infrastructure/postgres/database.py",

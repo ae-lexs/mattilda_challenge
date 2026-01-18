@@ -7,7 +7,7 @@ if TYPE_CHECKING:
     from datetime import datetime
     from decimal import Decimal
 
-    from mattilda_challenge.domain.value_objects import StudentId
+    from mattilda_challenge.domain.value_objects import SchoolId, StudentId
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,3 +42,38 @@ class StudentAccountStatement:
 
     # Metadata
     statement_date: datetime  # When statement was generated]
+
+
+@dataclass(frozen=True, slots=True)
+class SchoolAccountStatement:
+    """
+    Account statement for a school (aggregated across all students).
+
+    Contains school-wide financial summary.
+    Designed to be cacheable in Redis.
+    """
+
+    school_id: SchoolId
+    school_name: str
+
+    # Student count
+    total_students: int
+    active_students: int
+
+    # Aggregated totals across all students
+    total_invoiced: Decimal
+    total_paid: Decimal
+    total_pending: Decimal
+
+    # Invoice counts
+    invoices_pending: int
+    invoices_partially_paid: int
+    invoices_paid: int
+    invoices_overdue: int
+    invoices_cancelled: int
+
+    # Total late fees across all students
+    total_late_fees: Decimal
+
+    # Metadata
+    statement_date: datetime
