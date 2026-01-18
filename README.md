@@ -403,6 +403,12 @@ All development tasks are executed through Docker containers using `make` comman
 | `make fmt` | Format code with ruff |
 | `make typecheck` | Run mypy strict type checking |
 | `make check` | Run lint + typecheck + test |
+| **Redis** | |
+| `make redis-cli` | Open Redis CLI shell |
+| `make redis-keys` | List all cache keys |
+| `make redis-get KEY=...` | Get cached value for a key |
+| `make redis-ttl KEY=...` | Check TTL for a key |
+| `make redis-clear` | Clear all cache keys |
 
 ---
 
@@ -503,13 +509,51 @@ See: **[ADR-008: Observability Strategy](docs/adrs/ADR-008-observability.md)**
 
 ---
 
+## Environment Variables
+
+All configuration is injected via environment variables in `docker-compose.yml`. No `.env` file is required for local development.
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| **Database** | | |
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql+asyncpg://postgres:postgres@db:5432/mattilda` |
+| `DATABASE_POOL_SIZE` | Connection pool size | `10` |
+| `DATABASE_MAX_OVERFLOW` | Max connections above pool size | `20` |
+| **Redis** | | |
+| `REDIS_URL` | Redis connection string | `redis://redis:6379/0` |
+| `CACHE_TTL_SECONDS` | Default cache TTL in seconds | `300` |
+| **Application** | | |
+| `DEBUG` | Enable debug mode (SQL logging, etc.) | `false` |
+
+### Redis Connection
+
+The application uses a shared connection pool for Redis operations:
+
+```python
+# Connection pool configuration (infrastructure/redis/client.py)
+pool = ConnectionPool.from_url(
+    settings.redis_url,      # redis://localhost:6379/0
+    max_connections=10,      # Shared across all cache adapters
+    decode_responses=True,   # Return strings, not bytes
+)
+```
+
+**Key characteristics:**
+- Lazy initialization (pool created on first use)
+- Connection pooling for efficiency
+- Automatic cleanup on application shutdown
+- Compatible with FastAPI dependency injection
+
+---
+
 ## Caching Strategy
 
 Account statements are cached in Redis with TTL-based invalidation:
 
-- **TTL**: 300 seconds (5 minutes)
+- **TTL**: 300 seconds (5 minutes), configurable via `CACHE_TTL_SECONDS`
 - **Pattern**: Cache-aside (check cache → compute if miss → cache result)
-- **Fail-open**: Cache failures don't break the application
+- **Fail-open**: Cache failures return `None` and log warnings; application continues via database fallback
+- **Serialization**: JSON with string decimals for precision preservation
 
 ```
 Cache Key Format:
@@ -517,7 +561,19 @@ mattilda:cache:v1:account_statement:student:{uuid}
 mattilda:cache:v1:account_statement:school:{uuid}
 ```
 
-See: **[ADR-006: Redis Caching Strategy](docs/adrs/ADR-006-caching-strategy.md)**
+### Redis Commands
+
+Use `make` commands to inspect and manage the cache:
+
+| Command | Description |
+|---------|-------------|
+| `make redis-cli` | Open Redis CLI shell |
+| `make redis-keys` | List all cache keys |
+| `make redis-get KEY=...` | Get cached value for a key |
+| `make redis-ttl KEY=...` | Check TTL for a key |
+| `make redis-clear` | Clear all cache keys |
+
+See: **[ADR-006: Redis Caching Strategy](docs/ADR-006.md)**
 
 ---
 
@@ -532,7 +588,7 @@ All significant architectural decisions are documented in ADRs:
 | [ADR-003](docs/adrs/ADR-003-time-provider.md) | Time Provider Interface and Implementation | Implemented |
 | [ADR-004](docs/adrs/ADR-004-postgresql-persistence.md) | PostgreSQL Persistence with SQLAlchemy and Alembic | Implemented |
 | [ADR-005](docs/adrs/ADR-005-rest-api-design.md) | REST API Design | Accepted |
-| [ADR-006](docs/adrs/ADR-006-caching-strategy.md) | Redis Caching for Account Statements | Accepted |
+| [ADR-006](docs/ADR-006.md) | Redis Caching for Account Statements | Implemented |
 | [ADR-007](docs/adrs/ADR-007-pagination.md) | Offset-Based Pagination | Implemented |
 | [ADR-008](docs/adrs/ADR-008-observability.md) | Observability Strategy | Accepted |
 | [ADR-009](docs/ADR-009.md) | Repository Port and Adapter Implementation | Implemented |

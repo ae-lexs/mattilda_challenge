@@ -1,3 +1,10 @@
+"""Redis implementation of StudentAccountStatementCache port.
+
+This module provides the Redis-backed cache adapter for student account statements.
+It implements the fail-open pattern where cache errors return None rather than
+raising exceptions, ensuring the system continues operating via database fallback.
+"""
+
 from __future__ import annotations
 
 import json
