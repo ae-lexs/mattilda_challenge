@@ -95,6 +95,9 @@ See [ADR-002: Domain Model Design](docs/adrs/ADR-002-domain-model.md) for comple
 | ✅ **Payments are append-only** | No updates or deletes after creation | [ADR-002](docs/adrs/ADR-002-domain-model.md#5-payment-entity) |
 | ✅ **Overdue is calculated** | Never stored as status, always computed from `due_date` and `now` | [ADR-002](docs/adrs/ADR-002-domain-model.md#4-invoice-entity) |
 | ✅ **Time is injected** | Domain never calls `datetime.now()`, always parameter from `TimeProvider` | [ADR-003](docs/adrs/ADR-003-time-provider.md) |
+| ✅ **`sort_by` validated in entrypoint** | Repositories trust `sort_by` is valid; validation happens in route handlers | [ADR-009](docs/adrs/ADR-009-repository-adapters.md#6-sort-validation-responsibility) |
+| ✅ **Repositories never raise domain exceptions** | Return `None` for not-found; let infra errors propagate; use cases raise domain errors | [ADR-009](docs/adrs/ADR-009-repository-adapters.md#5-error-handling) |
+| ✅ **Cross-aggregate filters via integration tests** | Filters spanning entities (e.g., `school_id` on invoices) must be tested with PostgreSQL | [ADR-009](docs/adrs/ADR-009-repository-adapters.md#43-cross-aggregate-filter-testing-guidelines) |
 
 ### Responsibility Boundaries
 
@@ -108,6 +111,8 @@ Know where logic lives to avoid architectural violations:
 | Validation | `__post_init__` + guard functions | `validate_utc_timestamp()`, Decimal type checks |
 | State transitions | Use cases orchestrate, entities validate | Use case updates status, entity validates transition |
 | Late fees | `LateFeePolicy` value object | Formula, rounding, "original amount" rule |
+| Sort field validation | Entrypoint (route handlers) | FastAPI Query enum validation, 422 on invalid `sort_by` |
+| Not-found errors | Use cases | Repository returns `None`, use case raises `EntityNotFoundError` |
 
 ### Transaction Boundaries (Critical)
 
@@ -171,6 +176,9 @@ async def record_payment_broken(
 - ❌ Reading `datetime.now()` directly anywhere
 - ❌ Using floats for money "temporarily" (no temporary violations)
 - ❌ Storing calculated fields (overdue, balance_due)
+- ❌ Raising domain exceptions from repositories (return `None` instead)
+- ❌ Validating `sort_by` in repositories (do it in entrypoint)
+- ❌ Unit testing cross-aggregate filters with in-memory repositories
 
 ---
 
@@ -964,6 +972,60 @@ def test_invoice_mark_as_paid_from_paid_raises():
         paid_invoice.mark_as_paid(now)
     
     assert "Cannot mark as paid from status: paid" in str(exc_info.value)
+```
+
+### 9. Repository Testing Guidelines
+
+**INVARIANT**: Cross-aggregate filters must be tested via integration tests only.
+
+See [ADR-009: Repository Adapters](docs/adrs/ADR-009-repository-adapters.md#43-cross-aggregate-filter-testing-guidelines) for complete rationale.
+
+| Filter Type | Unit Test (In-Memory) | Integration Test (PostgreSQL) |
+|-------------|----------------------|------------------------------|
+| Same-entity filters (`student_id`, `status`) | ✅ Test thoroughly | ✅ Verify query correctness |
+| Cross-aggregate filters (`school_id` on invoices) | ❌ Skip or mock | ✅ **Required** |
+| Date range filters | ✅ Test boundary conditions | ✅ Verify SQL behavior |
+
+```python
+# ✅ CORRECT: Unit test for same-entity filter
+async def test_find_invoices_by_student_id(memory_invoice_repo):
+    """Unit test - student_id is on Invoice entity."""
+    invoice = create_test_invoice(student_id=StudentId(uuid4()))
+    await memory_invoice_repo.save(invoice)
+    
+    page = await memory_invoice_repo.find(
+        filters=InvoiceFilters(student_id=invoice.student_id.value),
+        pagination=PaginationParams(offset=0, limit=10),
+        sort=SortParams(sort_by="created_at", sort_order="desc"),
+    )
+    
+    assert len(page.items) == 1
+
+
+# ✅ CORRECT: Integration test for cross-aggregate filter
+@pytest.mark.integration
+async def test_find_invoices_by_school_id(postgres_session):
+    """Integration test - school_id requires join through Student."""
+    # Setup: create school, student, invoice in database
+    school = await create_school_in_db(postgres_session)
+    student = await create_student_in_db(postgres_session, school_id=school.id)
+    invoice = await create_invoice_in_db(postgres_session, student_id=student.id)
+    
+    repo = PostgresInvoiceRepository(postgres_session)
+    page = await repo.find(
+        filters=InvoiceFilters(school_id=school.id.value),
+        pagination=PaginationParams(offset=0, limit=10),
+        sort=SortParams(sort_by="created_at", sort_order="desc"),
+    )
+    
+    assert len(page.items) == 1
+    assert page.items[0].id == invoice.id
+
+
+# ❌ WRONG: Unit test for cross-aggregate filter
+async def test_find_invoices_by_school_id_unit(memory_invoice_repo):
+    """Don't do this - in-memory can't simulate cross-aggregate joins."""
+    # This test would give false confidence - the filter is silently ignored!
 ```
 
 ---
