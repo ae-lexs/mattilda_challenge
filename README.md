@@ -527,15 +527,15 @@ All significant architectural decisions are documented in ADRs:
 
 | ADR | Title | Status |
 |-----|-------|--------|
-| [ADR-001](docs/adrs/ADR-001-project-initialization.md) | Project Initialization & Structure | Accepted |
-| [ADR-002](docs/adrs/ADR-002-domain-model.md) | Domain Model Design | Accepted |
-| [ADR-003](docs/adrs/ADR-003-time-provider.md) | Time Provider Interface and Implementation | Accepted |
-| [ADR-004](docs/adrs/ADR-004-postgresql-persistence.md) | PostgreSQL Persistence with SQLAlchemy and Alembic | Accepted |
+| [ADR-001](docs/adrs/ADR-001-project-initialization.md) | Project Initialization & Structure | Implemented |
+| [ADR-002](docs/adrs/ADR-002-domain-model.md) | Domain Model Design | Implemented |
+| [ADR-003](docs/adrs/ADR-003-time-provider.md) | Time Provider Interface and Implementation | Implemented |
+| [ADR-004](docs/adrs/ADR-004-postgresql-persistence.md) | PostgreSQL Persistence with SQLAlchemy and Alembic | Implemented |
 | [ADR-005](docs/adrs/ADR-005-rest-api-design.md) | REST API Design | Accepted |
 | [ADR-006](docs/adrs/ADR-006-caching-strategy.md) | Redis Caching for Account Statements | Accepted |
-| [ADR-007](docs/adrs/ADR-007-pagination.md) | Offset-Based Pagination | **Implemented** |
+| [ADR-007](docs/adrs/ADR-007-pagination.md) | Offset-Based Pagination | Implemented |
 | [ADR-008](docs/adrs/ADR-008-observability.md) | Observability Strategy | Accepted |
-| [ADR-009](docs/ADR-009.md) | Repository Port and Adapter Implementation | **Implemented** |
+| [ADR-009](docs/ADR-009.md) | Repository Port and Adapter Implementation | Implemented |
 
 ---
 
