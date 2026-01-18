@@ -192,14 +192,14 @@ flowchart TD
     
     subgraph Application["Application Layer"]
         A1[Use Cases]
-        A2[Ports: TimeProvider, Cache]
+        A2[Ports: Repositories, TimeProvider, Cache]
         A3[Application DTOs]
+        A4[Filters & Pagination]
     end
-    
+
     subgraph Domain["Domain Layer"]
         D1[Entities: Invoice, Student, School, Payment]
         D2[Value Objects: InvoiceId, LateFeePolicy]
-        D3[Ports: Repository Interfaces]
         D4[Domain Exceptions]
     end
     
@@ -270,11 +270,6 @@ mattilda_challenge/
 │       │   │   ├── invoice_status.py
 │       │   │   ├── student_status.py
 │       │   │   └── late_fee_policy.py
-│       │   ├── ports/
-│       │   │   ├── school_repository.py
-│       │   │   ├── student_repository.py
-│       │   │   ├── invoice_repository.py
-│       │   │   └── payment_repository.py
 │       │   └── exceptions.py
 │       ├── application/
 │       │   ├── use_cases/
@@ -286,7 +281,13 @@ mattilda_challenge/
 │       │   │   └── get_school_account_statement.py
 │       │   ├── ports/
 │       │   │   ├── time_provider.py
+│       │   │   ├── school_repository.py
+│       │   │   ├── student_repository.py
+│       │   │   ├── invoice_repository.py
+│       │   │   ├── payment_repository.py
 │       │   │   └── account_statement_cache.py
+│       │   ├── filters.py              # Entity-specific filter dataclasses
+│       │   ├── common.py               # Page[T], PaginationParams, SortParams
 │       │   └── dtos/
 │       │       └── account_statement.py
 │       ├── infrastructure/
@@ -298,10 +299,19 @@ mattilda_challenge/
 │       │   ├── redis/
 │       │   │   └── client.py
 │       │   ├── adapters/
-│       │   │   ├── school_repository.py
-│       │   │   ├── student_repository.py
-│       │   │   ├── invoice_repository.py
-│       │   │   ├── payment_repository.py
+│       │   │   ├── school_repository/
+│       │   │   │   ├── postgres.py
+│       │   │   │   └── in_memory.py
+│       │   │   ├── student_repository/
+│       │   │   │   ├── postgres.py
+│       │   │   │   └── in_memory.py
+│       │   │   ├── invoice_repository/
+│       │   │   │   ├── postgres.py
+│       │   │   │   └── in_memory.py
+│       │   │   ├── payment_repository/
+│       │   │   │   ├── postgres.py
+│       │   │   │   └── in_memory.py
+│       │   │   ├── time_provider.py
 │       │   │   └── account_statement_cache.py
 │       │   └── observability/
 │       │       ├── logging.py
@@ -525,7 +535,7 @@ All significant architectural decisions are documented in ADRs:
 | [ADR-006](docs/adrs/ADR-006-caching-strategy.md) | Redis Caching for Account Statements | Accepted |
 | [ADR-007](docs/adrs/ADR-007-pagination.md) | Offset-Based Pagination | **Implemented** |
 | [ADR-008](docs/adrs/ADR-008-observability.md) | Observability Strategy | Accepted |
-| [ADR-009](docs/ADR-009.md) | Repository Port and Adapter Implementation | Accepted |
+| [ADR-009](docs/ADR-009.md) | Repository Port and Adapter Implementation | **Implemented** |
 
 ---
 
@@ -664,11 +674,11 @@ All ADRs have been written and accepted. Implementation is in progress.
 - ✅ ADR-002: Domain Model Design
 - ✅ ADR-003: Time Provider (port and adapters)
 - ✅ ADR-007: Pagination types (`PaginationParams`, `SortParams`, `Page[T]`, filter dataclasses)
-- ✅ ADR-009: Repository Port and Adapter Implementation (specification)
+- ✅ ADR-009: Repository ports, PostgreSQL adapters, and in-memory adapters (with unit and integration tests)
 
 **Implementation Roadmap**:
 - [x] **Stage 1**: Domain model with entities and value objects
-- [ ] **Stage 2**: Repository pattern and database persistence
+- [x] **Stage 2**: Repository pattern and database persistence
 - [ ] **Stage 3**: Use cases and application logic
 - [ ] **Stage 4**: REST API endpoints with OpenAPI docs
 - [ ] **Stage 5**: Caching and pagination
