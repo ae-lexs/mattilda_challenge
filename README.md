@@ -744,6 +744,24 @@ All ADRs have been written and accepted. Implementation is in progress.
 
 ---
 
+Dependency Management
+Dependencies are managed with uv and fully locked.
+
+Workflow:
+
+``sh
+make lock
+make sync
+git add pyproject.toml uv.lock
+git commit -m "chore: update dependencies"
+```
+
+All environments (local, CI, production) install dependencies strictly from the lockfile.
+
+
+---
+
+
 ## License
 
 MIT License (for challenge purposes)

@@ -50,6 +50,8 @@ class Settings(BaseSettings):
 
     # Application
     debug: bool = False
+    app_version: str = "1.0.0"
+    enable_metrics: bool = True
 
     @property
     def database_url_sync(self) -> str:
