@@ -28,6 +28,10 @@ from mattilda_challenge.infrastructure.adapters.time_provider import (
     FixedTimeProvider,
     SystemTimeProvider,
 )
+from mattilda_challenge.infrastructure.adapters.unit_of_work import (
+    InMemoryUnitOfWork,
+    PostgresUnitOfWork,
+)
 
 __all__ = [
     # Time Provider
@@ -51,4 +55,7 @@ __all__ = [
     # Student Repository
     "InMemoryStudentRepository",
     "PostgresStudentRepository",
+    # Unit of Work
+    "InMemoryUnitOfWork",
+    "PostgresUnitOfWork",
 ]
