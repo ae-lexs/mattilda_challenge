@@ -532,6 +532,28 @@ class TestDeleteStudentUseCase:
         # Assert
         assert uow.committed is True
 
+    async def test_execute_removes_student_from_repository(
+        self,
+        uow: InMemoryUnitOfWork,
+        sample_school: School,
+        sample_student: Student,
+        fixed_time: datetime,
+    ) -> None:
+        """Test execute actually removes the student from repository."""
+        # Arrange
+        await uow.schools.save(sample_school)
+        await uow.students.save(sample_student)
+        uow.reset_tracking()
+        use_case = DeleteStudentUseCase()
+        request = DeleteStudentRequest(student_id=sample_student.id)
+
+        # Act
+        await use_case.execute(uow, request, fixed_time)
+
+        # Assert - student should no longer exist
+        deleted_student = await uow.students.get_by_id(sample_student.id)
+        assert deleted_student is None
+
 
 # ============================================================================
 # ListStudentsUseCase

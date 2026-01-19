@@ -97,6 +97,10 @@ class InMemorySchoolRepository(SchoolRepository):
 
         return sorted(items, key=key_func, reverse=reverse)
 
+    async def delete(self, school_id: SchoolId) -> None:
+        """Delete school by ID."""
+        self._schools.pop(school_id, None)
+
     # Test helper methods (not part of port interface)
 
     def clear(self) -> None:

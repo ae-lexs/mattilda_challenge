@@ -70,3 +70,17 @@ class SchoolRepository(ABC):
             Page containing matching schools and metadata
         """
         ...
+
+    @abstractmethod
+    async def delete(self, school_id: SchoolId) -> None:
+        """
+        Delete a school by ID.
+
+        Args:
+            school_id: Unique school identifier
+
+        Note:
+            Does not commit - UnitOfWork handles transaction.
+            Caller should verify school exists before calling.
+        """
+        ...

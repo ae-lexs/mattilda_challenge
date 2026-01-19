@@ -55,9 +55,8 @@ class DeleteStudentUseCase:
                     f"Student {request.student_id.value} not found"
                 )
 
-            # Note: Actual deletion would require a delete method on the repository
-            # For now, we'll just log and commit (soft delete could be implemented)
-            # In a real implementation, add: await uow.students.delete(student)
+            # Delete the student
+            await uow.students.delete(request.student_id)
 
             await uow.commit()
 
