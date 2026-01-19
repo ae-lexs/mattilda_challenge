@@ -51,4 +51,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 # Set entrypoint to run migrations before starting the app
 ENTRYPOINT ["/run_alembic_migrations.sh"]
 
-CMD ["uv", "run", "uvicorn", "mattilda_challenge.entrypoints.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uv", "run", "uvicorn", "mattilda_challenge.entrypoints.http.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

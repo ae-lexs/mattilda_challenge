@@ -94,3 +94,17 @@ class StudentRepository(ABC):
             Number of students in school
         """
         ...
+
+    @abstractmethod
+    async def delete(self, student_id: StudentId) -> None:
+        """
+        Delete a student by ID.
+
+        Args:
+            student_id: Unique student identifier
+
+        Note:
+            Does not commit - UnitOfWork handles transaction.
+            Caller should verify student exists before calling.
+        """
+        ...

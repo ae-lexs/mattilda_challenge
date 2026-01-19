@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import ColumnElement, and_, func, select
+from sqlalchemy import ColumnElement, and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mattilda_challenge.application.common import Page, PaginationParams, SortParams
@@ -159,3 +159,9 @@ class PostgresStudentRepository(StudentRepository):
             "status": StudentModel.status,
         }
         return column_map.get(sort_by, StudentModel.created_at)
+
+    async def delete(self, student_id: StudentId) -> None:
+        """Delete student by ID."""
+        stmt = delete(StudentModel).where(StudentModel.id == student_id.value)
+        await self._session.execute(stmt)
+        await self._session.flush()
