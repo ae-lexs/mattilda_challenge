@@ -40,17 +40,14 @@ This document provides detailed coding standards, style guidelines, and contribu
 git clone <repository-url>
 cd mattilda-backend
 
-# Start all services
+# Start all services & Migrations run automatically
 make up
-
-# Run migrations
-make migrate
 
 # Load seed data (optional)
 make seed
 
 # Access API documentation
-open http://localhost:8000/docs
+open http://0.0.0.0:8000/redoc
 ```
 
 ### Development Workflow

@@ -41,6 +41,12 @@ def configure_logging(*, debug: bool = False) -> None:
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
+        structlog.processors.CallsiteParameterAdder(
+            [
+                structlog.processors.CallsiteParameter.MODULE,
+                structlog.processors.CallsiteParameter.LINENO,
+            ]
+        ),
     ]
 
     if debug:

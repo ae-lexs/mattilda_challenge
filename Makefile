@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: help up down logs ps sh lock sync test test-unit test-integration test-all test-file test-coverage lint lint-fix typecheck fmt check migrate migrate-new redis-cli redis-keys redis-get redis-ttl redis-clear
+.PHONY: help up down logs ps sh lock sync test test-unit test-integration test-all test-file test-coverage lint lint-fix typecheck fmt check migrate migrate-new seed redis-cli redis-keys redis-get redis-ttl redis-clear
 
 help:
 	@echo "mattilda-challenge commands:"
@@ -34,6 +34,7 @@ help:
 	@echo "Database:"
 	@echo "  make migrate        Run pending migrations"
 	@echo "  make migrate-new MSG=desc  Create new migration"
+	@echo "  make seed           Seed database with sample data (idempotent)"
 	@echo ""
 	@echo "Redis:"
 	@echo "  make redis-cli      Open Redis CLI shell"
@@ -108,6 +109,9 @@ migrate-new:
 		exit 1; \
 	fi
 	docker compose run --rm api uv run alembic revision --autogenerate -m "$(MSG)"
+
+seed:
+	docker compose run --rm api uv run python scripts/seed_database.py
 
 redis-cli:
 	docker compose exec redis redis-cli
